@@ -182,6 +182,14 @@ class SubtitleProcessor:
         
         텍스트의 중앙에 가까우면서 언어적으로 자연스러운 공백에서 줄바꿈
         """
+        # Check if already has line breaks - if all lines are within limit, don't reformat
+        if '\n' in text:
+            lines = text.split('\n')
+            all_lines_ok = all(len(line.strip()) <= self.max_chars_per_line for line in lines)
+            if all_lines_ok:
+                return text  # Already properly formatted
+        
+        # Check if single line is within limit
         if len(text) <= self.max_chars_per_line:
             return text
         

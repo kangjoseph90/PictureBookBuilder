@@ -490,9 +490,42 @@ class TimelineCanvas(QWidget):
             self.resize_original_source_start = edge_clip.source_start
             self.resize_original_source_end = edge_clip.source_end
             self.resize_original_duration = edge_clip.duration
-            self.resize_original_start = edge_clip.start  # Add this to track original position
+            self.resize_original_start = edge_clip.start
             self.selected_clip = edge_clip.id
             self.clip_selected.emit(edge_clip.id)
+            
+            # Check for Ctrl key - linked boundary mode
+            self.linked_clip = None
+            self.linked_original_start = 0.0
+            self.linked_original_duration = 0.0
+            
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # Find adjacent clip at this boundary
+                boundary_time = edge_clip.start if edge == "left" else edge_clip.start + edge_clip.duration
+                
+                for clip in self.clips:
+                    if clip.id == edge_clip.id:
+                        continue
+                    if clip.track != edge_clip.track:
+                        continue
+                    
+                    # Check if this clip's edge touches our boundary
+                    clip_start = clip.start
+                    clip_end = clip.start + clip.duration
+                    
+                    if edge == "left" and abs(clip_end - boundary_time) < 0.01:
+                        # Adjacent clip's right edge touches our left edge
+                        self.linked_clip = clip
+                        self.linked_original_start = clip.start
+                        self.linked_original_duration = clip.duration
+                        break
+                    elif edge == "right" and abs(clip_start - boundary_time) < 0.01:
+                        # Adjacent clip's left edge touches our right edge
+                        self.linked_clip = clip
+                        self.linked_original_start = clip.start
+                        self.linked_original_duration = clip.duration
+                        break
+            
             self.update()
             return
         
@@ -610,6 +643,23 @@ class TimelineCanvas(QWidget):
                                 clip.duration = new_duration
                     break
             
+            # Update linked clip if Ctrl+drag mode
+            if self.linked_clip is not None:
+                if self.resize_edge == "left":
+                    # Our left edge moved, linked clip's right edge should follow
+                    # dt > 0 means we moved right, linked clip should expand
+                    new_linked_duration = self.linked_original_duration + dt
+                    if new_linked_duration > 0.1:
+                        self.linked_clip.duration = new_linked_duration
+                elif self.resize_edge == "right":
+                    # Our right edge moved, linked clip's left edge should follow
+                    # dt > 0 means we moved right, linked clip should shrink and shift
+                    new_linked_start = self.linked_original_start + dt
+                    new_linked_duration = self.linked_original_duration - dt
+                    if new_linked_duration > 0.1:
+                        self.linked_clip.start = new_linked_start
+                        self.linked_clip.duration = new_linked_duration
+            
             # Update snap indicator for resizing
             self.active_snap_time = None
             if self.resize_edge == "left" and snapped_start != target_start:
@@ -634,8 +684,9 @@ class TimelineCanvas(QWidget):
                     break
             
             if dragged_clip:
-                # Check for ripple modifier (Ctrl)
-                is_ripple = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                # Check for ripple modifiers
+                is_ripple_all = event.modifiers() & Qt.KeyboardModifier.ControlModifier  # All tracks
+                is_ripple_track = event.modifiers() & Qt.KeyboardModifier.ShiftModifier  # Same track only
                 
                 new_start = self.drag_clip_start + dt
                 # Apply snapping to the start of the dragged clip
@@ -654,11 +705,18 @@ class TimelineCanvas(QWidget):
                 final_start = max(0, final_start)
                 actual_dt = final_start - self.drag_clip_start
                 
-                if is_ripple:
-                    # Move all subsequent clips by the same delta
+                if is_ripple_all:
+                    # Ctrl: Move all subsequent clips across ALL tracks
                     for clip in self.clips:
                         initial_start = self.drag_initial_positions.get(clip.id, clip.start)
-                        # Identify "subsequent" clips based on their position at drag start
+                        if initial_start >= self.drag_clip_start - 0.001:
+                            clip.start = max(0, initial_start + actual_dt)
+                elif is_ripple_track:
+                    # Shift: Move all subsequent clips in SAME TRACK only
+                    for clip in self.clips:
+                        if clip.track != dragged_clip.track:
+                            continue
+                        initial_start = self.drag_initial_positions.get(clip.id, clip.start)
                         if initial_start >= self.drag_clip_start - 0.001:
                             clip.start = max(0, initial_start + actual_dt)
                 else:
