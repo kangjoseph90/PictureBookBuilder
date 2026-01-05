@@ -108,6 +108,10 @@ class TimelineCanvas(QWidget):
         self.text_color = QColor("#CCCCCC")
         self.playhead_color = QColor("#FF4444")
         self.pixmap_cache: dict[str, 'QPixmap'] = {}  # Cache for thumbnails
+        
+        # Audio cache for real-time waveform updates
+        self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
+        self.waveform_extractor = None  # Will be set by main_window
     
     def set_clips(self, clips: list[TimelineClip]):
         """Set the clips to display"""
@@ -144,6 +148,33 @@ class TimelineCanvas(QWidget):
             self.total_duration = max(clip.end for clip in self.clips)
         else:
             self.total_duration = 60.0  # Default 1 minute if no clips
+    
+    def update_clip_waveform(self, clip_id: str):
+        """Update waveform for a clip based on current source boundaries
+        
+        Args:
+            clip_id: ID of the clip to update
+        """
+        for clip in self.clips:
+            if clip.id == clip_id:
+                if clip.clip_type == "audio" and self.waveform_extractor:
+                    speaker = clip.speaker if clip.speaker else None
+                    if not speaker and ":" in clip.name:
+                        speaker = clip.name.split(":")[0].strip()
+                    
+                    if speaker and speaker in self.speaker_audio_cache:
+                        try:
+                            audio = self.speaker_audio_cache[speaker]
+                            # Extract the segment based on current source boundaries
+                            start_ms = int(clip.source_start * 1000)
+                            end_ms = int(clip.source_end * 1000)
+                            segment = audio[start_ms:end_ms]
+                            
+                            # Generate and update waveform
+                            clip.waveform = self.waveform_extractor(segment)
+                        except Exception as e:
+                            print(f"Error updating waveform for clip {clip_id}: {e}")
+                break
     
     def set_playhead(self, time: float, auto_scroll: bool = False):
         """Set playhead position
@@ -682,6 +713,9 @@ class TimelineCanvas(QWidget):
                 self.active_snap_time = snapped_start
             elif self.resize_edge == "right" and snapped_end != target_end:
                 self.active_snap_time = snapped_end
+            
+            # Update waveform in real-time during resizing
+            self.update_clip_waveform(self.resizing_clip)
                 
             self.clip_editing.emit(self.resizing_clip)
             self.update()

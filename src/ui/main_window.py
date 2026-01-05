@@ -2179,6 +2179,11 @@ class MainWindow(QMainWindow):
                     print(f"  Failed to load audio for {speaker}: {e}")
             else:
                 print(f"  Audio path not found for speaker {speaker}: {audio_path}")
+        
+        # Pass audio cache to timeline canvas for real-time waveform updates
+        self.timeline_widget.canvas.speaker_audio_cache = self.speaker_audio_cache
+        self.timeline_widget.canvas.waveform_extractor = self._extract_waveform_from_audio
+
     
     def _regenerate_waveforms(self):
         """Regenerate waveforms for audio clips from cached audio"""
