@@ -1387,8 +1387,12 @@ class MainWindow(QMainWindow):
     
     def _on_preview_position_changed(self, position_ms: int):
         """Handle position change from preview - sync to timeline"""
+        from PyQt6.QtMultimedia import QMediaPlayer
+        
         time_seconds = position_ms / 1000.0
-        self.timeline_widget.set_playhead(time_seconds)
+        # Only auto-scroll when playing
+        is_playing = self.preview_widget.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.timeline_widget.set_playhead(time_seconds, auto_scroll=is_playing)
     
     def _export_srt(self):
         """Export SRT file"""

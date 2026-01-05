@@ -145,9 +145,25 @@ class TimelineCanvas(QWidget):
         else:
             self.total_duration = 60.0  # Default 1 minute if no clips
     
-    def set_playhead(self, time: float):
-        """Set playhead position"""
+    def set_playhead(self, time: float, auto_scroll: bool = False):
+        """Set playhead position
+        
+        Args:
+            time: Playhead time in seconds
+            auto_scroll: If True, scroll to keep playhead visible
+        """
         self.playhead_time = max(0, time)  # Allow any positive time
+        
+        # Auto-scroll to keep playhead visible (only when explicitly requested)
+        if auto_scroll:
+            playhead_x = self.time_to_x(self.playhead_time)
+            left_margin = 20  # Small margin from left edge
+            
+            if playhead_x > self.width() or playhead_x < 0:
+                # Playhead is off screen, scroll so playhead is at left edge
+                self.scroll_offset = self.playhead_time * self.zoom - left_margin
+                self.scroll_offset = max(0, self.scroll_offset)
+        
         self.update()
     
     def set_gap(self, gap_seconds: float):
@@ -846,9 +862,9 @@ class TimelineWidget(QWidget):
         """Handle playhead movement from canvas"""
         self.playhead_changed.emit(time)
     
-    def set_playhead(self, time: float):
+    def set_playhead(self, time: float, auto_scroll: bool = False):
         """Set playhead position from external source"""
-        self.canvas.set_playhead(time)
+        self.canvas.set_playhead(time, auto_scroll=auto_scroll)
     
     def set_clips(self, clips: list[TimelineClip]):
         """Set the clips to display"""
