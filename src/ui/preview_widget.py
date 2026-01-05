@@ -18,6 +18,9 @@ from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 class PreviewWidget(QWidget):
     """Widget for previewing images and audio playback"""
     
+    # Signal emitted when playback position changes (position_ms)
+    position_changed = pyqtSignal(int)
+    
     def __init__(self):
         super().__init__()
         self.current_image: Optional[str] = None
@@ -25,6 +28,7 @@ class PreviewWidget(QWidget):
         self.total_duration: float = 0.0
         self.image_clips: list[dict] = []  # [{'path': str, 'start': float, 'end': float}]
         self.subtitle_clips: list[dict] = []  # [{'text': str, 'start': float, 'end': float}]
+        self.images: list[str] = []  # Added for backward compatibility/internal use
         self.current_subtitle: Optional[str] = None
         
         self._setup_ui()
@@ -138,6 +142,32 @@ class PreviewWidget(QWidget):
         # Only show prompt if we are not restoring a position
         if initial_pos_ms <= 0:
             self.image_label.setText("▶️ 재생 버튼을 누르세요")
+            
+    def set_images(self, image_paths: list[str], timestamps: list[float]):
+        """Set images with specific start timestamps
+        
+        Args:
+            image_paths: List of local paths to images
+            timestamps: List of start times (seconds) for each image
+        """
+        self.images = image_paths
+        self.image_clips = []
+        
+        for i in range(len(image_paths)):
+            path = image_paths[i]
+            start = timestamps[i]
+            # End is the next timestamp, or a very large value if last
+            end = timestamps[i+1] if i + 1 < len(timestamps) else 999999.0
+            
+            self.image_clips.append({
+                'path': path,
+                'start': start,
+                'end': end
+            })
+            
+        # Update current display
+        if self.media_player.position() >= 0:
+            self._on_position_changed(self.media_player.position())
     
     def set_timeline_clips(self, clips: list, playhead_ms: int = None):
         """Update preview data from timeline clips
@@ -313,8 +343,8 @@ class PreviewWidget(QWidget):
         """Stop playback"""
         self.media_player.stop()
         self.seek_slider.setValue(0)
-        if self.images:
-            self.set_image(self.images[0])
+        if self.image_clips:
+            self.set_image(self.image_clips[0]['path'])
     
     def _on_seek_start(self):
         """Called when user starts dragging the seek slider"""
@@ -335,7 +365,7 @@ class PreviewWidget(QWidget):
                 f"{self._format_time(position_ms)} / {self._format_time(int(self.total_duration * 1000))}"
             )
             # Update image preview while seeking
-            if self.images:
+            if self.image_clips:
                 image = self._get_current_image(position_ms)
                 if image:
                     self.set_image(image)
@@ -345,6 +375,32 @@ class PreviewWidget(QWidget):
         super().resizeEvent(event)
         if self.current_image:
             self.set_image(self.current_image)
+    
+    def clear_preview(self):
+        """Clear all preview data and reset to initial state"""
+        # Stop playback
+        self.media_player.stop()
+        self.media_player.setSource(QUrl())
+        
+        # Clear data
+        self.audio_path = None
+        self.current_image = None
+        self.image_clips = []
+        self.subtitle_clips = []
+        self.images = []
+        self.current_subtitle = None
+        self.total_duration = 0.0
+        
+        # Reset UI
+        self.image_label.clear()
+        self.image_label.setText("미리보기\n\n처리 완료 후 재생 버튼을 누르세요")
+        self.subtitle_label.hide()
+        self.subtitle_label.setText("")
+        self.time_label.setText("0:00 / 0:00")
+        self.seek_slider.setValue(0)
+        self.status_label.setText("대기 중")
+        self.status_label.setStyleSheet("color: gray;")
+        self.btn_play.setText("▶️ 재생")
     
     def cleanup(self):
         """Cleanup resources"""

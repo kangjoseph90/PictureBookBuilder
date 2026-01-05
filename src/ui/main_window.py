@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
         image_group = QGroupBox("이미지 파일")
         image_layout = QVBoxLayout(image_group)
         self.image_list = QListWidget()
+        self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         image_layout.addWidget(self.image_list)
         layout.addWidget(image_group)
         
@@ -1296,7 +1297,9 @@ class MainWindow(QMainWindow):
             import tempfile
             from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
             
-            speaker_audio_map = self.result_data.get('speaker_audio_map', {})
+            # Use self.speaker_audio_map directly (works for both fresh and loaded projects)
+            speaker_audio_map = self.speaker_audio_map or {}
+
             
             # Load speaker audio files
             speaker_audio: dict[str, AudioSegment] = {}
@@ -1613,14 +1616,32 @@ class MainWindow(QMainWindow):
         self.result_data = None
         self.project_path = None
         
+        # Reset timeline
         self.timeline_widget.canvas.clips = []
         self.timeline_widget.canvas.update()
         self.preview_widget.set_timeline_clips([])
         
+        # Reset script UI
         self.script_text.setPlainText("")
+        self.btn_script.setText("📂 스크립트")
+        
+        # Reset image UI
+        self.btn_image.setText("🖼️ 이미지 폴더")
+        self.image_list.clear()
+        
+        # Reset mapping table
         self.mapping_table.setRowCount(0)
+        self.mapping_info.setText("스크립트를 불러오면 화자 목록이 표시됩니다.")
+        
+        # Reset buttons
         self.btn_process.setEnabled(False)
         self.btn_format_subtitles.setEnabled(False)
+        self.btn_export_srt.setEnabled(False)
+        self.btn_export_xml.setEnabled(False)
+        self.btn_render.setEnabled(False)
+        
+        # Reset preview
+        self.preview_widget.clear_preview()
         
         self.setWindowTitle("PictureBookBuilder")
         self.statusBar().showMessage("새 프로젝트가 생성되었습니다.")
@@ -1693,6 +1714,7 @@ class MainWindow(QMainWindow):
                 'source_start': clip.source_start,
                 'source_end': clip.source_end,
                 'segment_index': clip.segment_index,
+                'speaker': clip.speaker,  # Save speaker for audio clips
             }
             
             # Add type-specific data
@@ -1710,10 +1732,14 @@ class MainWindow(QMainWindow):
             
             clips_data.append(clip_dict)
         
+        # Save script content directly (in case file is moved)
+        script_content = self.script_text.toPlainText()
+        
         project_data = {
             'version': '1.0',
             'saved_at': datetime.now().isoformat(),
             'script_path': self.script_path,
+            'script_content': script_content,  # Save script content
             'image_folder': self.image_folder,
             'speaker_audio_map': self.speaker_audio_map,
             'clips': clips_data,
@@ -1737,10 +1763,23 @@ class MainWindow(QMainWindow):
         self.image_folder = data.get('image_folder')
         self.speaker_audio_map = data.get('speaker_audio_map', {})
         
-        # Load script if available
+        # Load script - prefer from file, fallback to saved content
         if self.script_path and Path(self.script_path).exists():
             with open(self.script_path, 'r', encoding='utf-8') as f:
                 self.script_text.setPlainText(f.read())
+        elif 'script_content' in data and data['script_content']:
+            # Fallback to saved content if file doesn't exist
+            self.script_text.setPlainText(data['script_content'])
+            print(f"Script file not found: {self.script_path}, using saved content")
+        
+        # Validate audio files exist
+        missing_audio = []
+        for speaker, audio_path in self.speaker_audio_map.items():
+            if audio_path and not Path(audio_path).exists():
+                missing_audio.append(f"  - {speaker}: {Path(audio_path).name}")
+        
+        # Track missing images
+        missing_images = []
         
         # Rebuild clips
         clips = []
@@ -1756,6 +1795,11 @@ class MainWindow(QMainWindow):
                         end=w['end']
                     ))
             
+            # Validate image path exists for image clips
+            image_path = clip_data.get('image_path')
+            if image_path and not Path(image_path).exists():
+                missing_images.append(f"  - {Path(image_path).name}")
+            
             clip = TimelineClip(
                 id=clip_data['id'],
                 name=clip_data['name'],
@@ -1768,7 +1812,8 @@ class MainWindow(QMainWindow):
                 source_start=clip_data.get('source_start', 0.0),
                 source_end=clip_data.get('source_end', 0.0),
                 segment_index=clip_data.get('segment_index', -1),
-                image_path=clip_data.get('image_path'),
+                image_path=image_path,
+                speaker=clip_data.get('speaker', ''),  # Restore speaker
                 words=words
             )
             clips.append(clip)
@@ -1777,9 +1822,137 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.update()
         self.preview_widget.set_timeline_clips(clips)
         
+        # Restore speaker-audio mapping table
+        self.speakers = list(self.speaker_audio_map.keys())
+        self.mapping_table.setRowCount(len(self.speakers))
+        for row, speaker in enumerate(self.speakers):
+            # Speaker name
+            speaker_item = QTableWidgetItem(speaker)
+            speaker_item.setFlags(speaker_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.mapping_table.setItem(row, 0, speaker_item)
+            
+            # Audio file
+            audio_path = self.speaker_audio_map.get(speaker, "")
+            if audio_path:
+                audio_item = QTableWidgetItem(Path(audio_path).name)
+                audio_item.setForeground(QColor(100, 200, 100))
+            else:
+                audio_item = QTableWidgetItem("(클릭하여 선택)")
+                audio_item.setForeground(QColor(150, 150, 150))
+            self.mapping_table.setItem(row, 1, audio_item)
+        
+        # Update mapping status
+        self._update_mapping_status()
+        
+        # Restore script label
+        if self.script_path and Path(self.script_path).exists():
+            self.btn_script.setText(f"📂 {Path(self.script_path).name}")
+        else:
+            self.btn_script.setText("📂 스크립트")
+        
+        # Restore image folder and list
+        self.image_list.clear()
+        print(f"Loading image folder: {self.image_folder}")
+        if self.image_folder and Path(self.image_folder).exists():
+            self.btn_image.setText(f"🖼️ {Path(self.image_folder).name}")
+            
+            image_folder = Path(self.image_folder)
+            images = []
+            for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+                images.extend(sorted(image_folder.glob(ext)))
+            
+            print(f"  Found {len(images)} images")
+            for img_path in images:
+                item = QListWidgetItem(f"🖼️ {img_path.name}")
+                self.image_list.addItem(item)
+        else:
+            print(f"  Image folder not found or empty: {self.image_folder}")
+            self.btn_image.setText("🖼️ 이미지 폴더")
+        
         # Enable buttons if we have clips
         if clips:
             self.btn_format_subtitles.setEnabled(True)
+            self.btn_export_srt.setEnabled(True)
+            self.btn_export_xml.setEnabled(True)
+            self.btn_render.setEnabled(True)
+            
+            # Load speaker audio cache for waveform regeneration
+            self._load_speaker_audio_cache()
+            
+            # Regenerate waveforms for audio clips
+            self._regenerate_waveforms()
+            
+            # Generate preview audio from clips
+            self._regenerate_preview_from_clips()
+        
+        # Show warning if files are missing
+        if missing_audio or missing_images:
+            from PyQt6.QtWidgets import QMessageBox
+            
+            warning_msg = "일부 파일을 찾을 수 없습니다:\n\n"
+            
+            if missing_audio:
+                warning_msg += "📀 누락된 오디오 파일:\n"
+                warning_msg += "\n".join(missing_audio[:5])  # Show first 5
+                if len(missing_audio) > 5:
+                    warning_msg += f"\n  ... 외 {len(missing_audio) - 5}개"
+                warning_msg += "\n\n"
+            
+            if missing_images:
+                # Remove duplicates
+                unique_missing_images = list(set(missing_images))
+                warning_msg += "🖼️ 누락된 이미지 파일:\n"
+                warning_msg += "\n".join(unique_missing_images[:5])  # Show first 5
+                if len(unique_missing_images) > 5:
+                    warning_msg += f"\n  ... 외 {len(unique_missing_images) - 5}개"
+            
+            warning_msg += "\n\n파일을 원래 위치로 복원하거나 다시 지정해주세요."
+            
+            QMessageBox.warning(self, "파일 누락 경고", warning_msg)
+    
+    def _load_speaker_audio_cache(self):
+        """Load speaker audio files into cache"""
+        from pydub import AudioSegment
+        
+        self.speaker_audio_cache = {}
+        print(f"Loading speaker audio cache. speaker_audio_map: {self.speaker_audio_map}")
+        for speaker, audio_path in self.speaker_audio_map.items():
+            if audio_path and Path(audio_path).exists():
+                try:
+                    self.speaker_audio_cache[speaker] = AudioSegment.from_file(audio_path)
+                    print(f"  Loaded audio for speaker: {speaker}")
+                except Exception as e:
+                    print(f"  Failed to load audio for {speaker}: {e}")
+            else:
+                print(f"  Audio path not found for speaker {speaker}: {audio_path}")
+    
+    def _regenerate_waveforms(self):
+        """Regenerate waveforms for audio clips from cached audio"""
+        regenerated_count = 0
+        for clip in self.timeline_widget.canvas.clips:
+            if clip.clip_type == "audio":
+                # Use clip.speaker attribute directly, fallback to parsing from name
+                speaker = clip.speaker if clip.speaker else None
+                if not speaker and ":" in clip.name:
+                    speaker = clip.name.split(":")[0].strip()
+                
+                if speaker and speaker in self.speaker_audio_cache:
+                    audio = self.speaker_audio_cache[speaker]
+                    
+                    # Extract the segment
+                    start_ms = int(clip.source_start * 1000)
+                    end_ms = int(clip.source_end * 1000)
+                    segment = audio[start_ms:end_ms]
+                    
+                    # Generate waveform
+                    clip.waveform = self._extract_waveform_from_audio(segment)
+                    regenerated_count += 1
+                else:
+                    print(f"Could not regenerate waveform for clip: {clip.name}, speaker: {speaker}")
+                    print(f"  Available speakers in cache: {list(self.speaker_audio_cache.keys())}")
+        
+        print(f"Regenerated {regenerated_count} waveforms")
+        self.timeline_widget.canvas.update()
 
 
 def main():
