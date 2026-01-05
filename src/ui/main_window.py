@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QColor, QIcon, QPixmap
 
 from .timeline_widget import TimelineWidget
 from .preview_widget import PreviewWidget
@@ -202,6 +202,22 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
+        # Apply global style for Splitters
+        self.setStyleSheet("""
+            QSplitter::handle {
+                background-color: transparent;
+            }
+            QSplitter::handle:hover {
+                background-color: transparent;
+            }
+            QSplitter::handle:horizontal {
+                width: 10px;
+            }
+            QSplitter::handle:vertical {
+                height: 10px;
+            }
+        """)
+        
         main_layout = QVBoxLayout(central_widget)
         
         # Top toolbar
@@ -210,6 +226,7 @@ class MainWindow(QMainWindow):
         
         # Main content area (splitter)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(10)
         
         # Left panel - Script and speaker mapping
         left_panel = self._create_left_panel()
@@ -223,11 +240,13 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter, 1)
         
         # Bottom controls
-        bottom_controls = self._create_bottom_controls()
-        main_layout.addLayout(bottom_controls)
+        # Status bar controls
+        self._create_bottom_controls()
         
         # Status bar
+        # Status bar
         self.statusBar().showMessage("준비")
+        self.statusBar().setSizeGripEnabled(False)  # Remove size grip for balance
     
     def _create_toolbar(self) -> QHBoxLayout:
         """Create the top toolbar"""
@@ -262,20 +281,27 @@ class MainWindow(QMainWindow):
     
     def _create_left_panel(self) -> QWidget:
         """Create left panel with script view and speaker mapping"""
+        # Wrapper widget
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 5, 0, 0)  # Consistent margins
         
-        # Script preview
+        # Vertical Splitter
+        from PyQt6.QtWidgets import QSplitter
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(10)
+        
+        # --- 1. Script Section ---
         script_group = QGroupBox("스크립트")
         script_layout = QVBoxLayout(script_group)
         self.script_text = QTextEdit()
         self.script_text.setReadOnly(True)
         self.script_text.setPlaceholderText("스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
-        self.script_text.setMaximumHeight(200)
+        # Removed setMaximumHeight to allow splitter resizing
         script_layout.addWidget(self.script_text)
-        layout.addWidget(script_group)
+        splitter.addWidget(script_group)
         
-        # Speaker-Audio Mapping
+        # --- 2. Speaker Mapping Section ---
         mapping_group = QGroupBox("화자별 오디오 매핑")
         mapping_layout = QVBoxLayout(mapping_group)
         
@@ -294,33 +320,55 @@ class MainWindow(QMainWindow):
         self.mapping_info.setStyleSheet("color: gray; font-style: italic;")
         mapping_layout.addWidget(self.mapping_info)
         
-        layout.addWidget(mapping_group)
+        splitter.addWidget(mapping_group)
         
-        # Image files list
+        # --- 3. Image Files Section ---
         image_group = QGroupBox("이미지 파일")
         image_layout = QVBoxLayout(image_group)
+        
+        # Image list with thumbnails and drag-drop reordering
         self.image_list = QListWidget()
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_list.setIconSize(QSize(48, 48))  # Thumbnail size
+        self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Multi-select with Ctrl/Shift
+        self.image_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)  # Enable reordering
+        self.image_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.image_list.setDragEnabled(True)
+        self.image_list.setAcceptDrops(True)
         image_layout.addWidget(self.image_list)
-        layout.addWidget(image_group)
+        
+        # Apply images button
+        self.btn_apply_images = QPushButton("🖼️ 이미지 일괄 적용")
+        self.btn_apply_images.setToolTip("이미지 목록 순서대로 오디오 클립에 1:1 매핑")
+        self.btn_apply_images.clicked.connect(self._apply_images_to_timeline)
+        self.btn_apply_images.setEnabled(False)
+        image_layout.addWidget(self.btn_apply_images)
+        
+        splitter.addWidget(image_group)
+        
+        # Set initial sizes
+        splitter.setSizes([150, 250, 400])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, False)
+        
+        layout.addWidget(splitter)
         
         return panel
     
     def _create_right_panel(self) -> QWidget:
         """Create right panel with preview and timeline (with splitter)"""
+        # Wrapper widget to handle margins
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 5, 10, 0)  # Consistent margins with left panel
+        layout.setSpacing(10)
+
         # Create a vertical splitter for preview and timeline
         from PyQt6.QtWidgets import QSplitter
         
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(5)
-        splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #444;
-            }
-            QSplitter::handle:hover {
-                background-color: #666;
-            }
-        """)
+        splitter.setHandleWidth(10)
         
         # Preview widget
         preview_container = QWidget()
@@ -366,28 +414,15 @@ class MainWindow(QMainWindow):
         # Set initial sizes (preview smaller, timeline larger)
         splitter.setSizes([300, 200])
         
-        return splitter
+        layout.addWidget(splitter)
+        return container
     
-    def _create_bottom_controls(self) -> QHBoxLayout:
-        """Create bottom control bar"""
-        layout = QHBoxLayout()
-        
-        # Gap control
-        layout.addWidget(QLabel("Gap 간격:"))
-        self.gap_slider = QSlider(Qt.Orientation.Horizontal)
-        self.gap_slider.setRange(0, 200)  # 0 to 2 seconds in 10ms steps
-        self.gap_slider.setValue(50)  # Default 0.5s
-        self.gap_slider.valueChanged.connect(self._on_gap_changed)
-        layout.addWidget(self.gap_slider)
-        
-        self.gap_spinbox = QSpinBox()
-        self.gap_spinbox.setRange(0, 2000)
-        self.gap_spinbox.setValue(500)
-        self.gap_spinbox.setSuffix(" ms")
-        self.gap_spinbox.valueChanged.connect(self._on_gap_spinbox_changed)
-        layout.addWidget(self.gap_spinbox)
-        
-        layout.addStretch()
+    def _create_bottom_controls(self):
+        """Create controls in status bar"""
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 15, 5)
+        layout.setSpacing(10)
         
         # Export buttons
         self.btn_export_srt = QPushButton("📥 SRT 내보내기")
@@ -405,7 +440,8 @@ class MainWindow(QMainWindow):
         self.btn_render.setEnabled(False)
         layout.addWidget(self.btn_render)
         
-        return layout
+        # Add to status bar
+        self.statusBar().addPermanentWidget(container)
     
     def _load_script(self):
         """Load script file and detect speakers"""
@@ -495,17 +531,120 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "이미지 폴더 선택")
         if path:
             self.image_folder = path
-            self.image_list.clear()
-            image_path = Path(path)
-            for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-                for f in sorted(image_path.glob(ext)):
-                    item = QListWidgetItem(f"🖼️ {f.name}")
-                    self.image_list.addItem(item)
-            self.btn_image.setText(f"🖼️ {image_path.name}")
+            self._populate_image_list(path)
+            self.btn_image.setText(f"🖼️ {Path(path).name}")
             
-            # If processing is already done, refresh timeline and preview with new images
-            if self.result_data and 'aligned' in self.result_data:
-                self._update_timeline(self.result_data)
+            # If processing is already done, enable apply button
+            if self.timeline_widget.canvas.clips:
+                self.btn_apply_images.setEnabled(True)
+    
+    def _populate_image_list(self, folder_path: str):
+        """Populate image list with thumbnails"""
+        self.image_list.clear()
+        image_path = Path(folder_path)
+        images = []
+        for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+            images.extend(sorted(image_path.glob(ext)))
+        
+        for f in images:
+            # Create thumbnail
+            pixmap = QPixmap(str(f))
+            if not pixmap.isNull():
+                # Scale to thumbnail size
+                thumbnail = pixmap.scaled(
+                    48, 48,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                icon = QIcon(thumbnail)
+                item = QListWidgetItem(icon, f.name)
+            else:
+                item = QListWidgetItem(f"🖼️ {f.name}")
+            
+            # Store full path in item data
+            item.setData(Qt.ItemDataRole.UserRole, str(f))
+            self.image_list.addItem(item)
+    
+    def _apply_images_to_timeline(self):
+        """Apply images from list to timeline, mapping 1:1 with audio clips"""
+        from .timeline_widget import TimelineClip
+        
+        # Get audio clips from timeline
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
+        if not audio_clips:
+            QMessageBox.warning(self, "오류", "타임라인에 오디오 클립이 없습니다.")
+            return
+        
+        # Get images from list (in current order)
+        image_paths = []
+        for i in range(self.image_list.count()):
+            item = self.image_list.item(i)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                image_paths.append(path)
+        
+        if not image_paths:
+            QMessageBox.warning(self, "오류", "이미지 목록이 비어있습니다.")
+            return
+        
+        # Sort audio clips by start time
+        audio_clips_sorted = sorted(audio_clips, key=lambda c: c.start)
+        
+        # Check if there are existing image clips
+        existing_image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
+        if existing_image_clips:
+            reply = QMessageBox.warning(
+                self, "경고",
+                f"기존 이미지 클립 {len(existing_image_clips)}개가 모두 삭제됩니다.\n계속하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        
+        # Remove existing image clips
+        self.timeline_widget.canvas.clips = [
+            c for c in self.timeline_widget.canvas.clips if c.clip_type != "image"
+        ]
+        
+        # Map images to audio clips 1:1
+        for i, audio_clip in enumerate(audio_clips_sorted):
+            if i < len(image_paths):
+                img_path = image_paths[i]
+            else:
+                # No more images - leave blank (no image clip)
+                continue
+            
+            # Calculate image duration
+            img_start = audio_clip.start
+            if i + 1 < len(audio_clips_sorted):
+                img_end = audio_clips_sorted[i + 1].start
+            else:
+                img_end = audio_clip.start + audio_clip.duration
+            
+            img_clip = TimelineClip(
+                id=f"img_{i}",
+                name=Path(img_path).name,
+                start=img_start,
+                duration=img_end - img_start,
+                track=2,  # Image track
+                color=QColor("#9E9E9E"),
+                clip_type="image",
+                waveform=[],
+                image_path=img_path
+            )
+            self.timeline_widget.canvas.clips.append(img_clip)
+        
+        # Update timeline
+        self.timeline_widget.canvas._update_total_duration()
+        self.timeline_widget.canvas.update()
+        
+        # Sync to preview
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
+        
+        # Show result
+        applied = min(len(image_paths), len(audio_clips_sorted))
+        self.statusBar().showMessage(f"이미지 {applied}개가 적용되었습니다.")
     
     def _check_ready(self):
         """Check if we have all inputs to start processing"""
@@ -548,6 +687,10 @@ class MainWindow(QMainWindow):
                 self._update_timeline(result)
                 # Generate preview audio
                 self._generate_preview_audio(result)
+                
+                # Enable image apply button if we have images
+                if self.image_list.count() > 0:
+                    self.btn_apply_images.setEnabled(True)
             
             QMessageBox.information(self, "완료", message)
         else:
@@ -564,7 +707,8 @@ class MainWindow(QMainWindow):
         speaker_audio_map = result.get('speaker_audio_map', {})
         clips = []
         current_time = 0.0
-        gap = self.gap_spinbox.value() / 1000.0
+        current_time = 0.0
+        gap = 0.5  # Default gap 0.5s (hardcoded)
         
         # Load speaker audio files for waveform extraction
         speaker_audio: dict[str, AudioSegment] = {}
@@ -720,7 +864,7 @@ class MainWindow(QMainWindow):
             
             aligned = result.get('aligned', [])
             speaker_audio_map = result.get('speaker_audio_map', {})
-            gap = self.gap_spinbox.value() / 1000.0
+            gap = 0.5  # Default gap 0.5s (hardcoded)
             
             if not aligned:
                 return
@@ -981,16 +1125,28 @@ class MainWindow(QMainWindow):
                 self._merge_subtitle_clips(clip, next_clip)
         
         elif clip.clip_type == "image":
+            change_image_action = menu.addAction("🖼️ 이미지 변경...")
             realign_action = menu.addAction("🔄 여기서 다시 정렬")
             menu.addSeparator()
             delete_action = menu.addAction("🗑️ 삭제")
             
             action = menu.exec(pos)
             
-            if action == realign_action:
+            if action == change_image_action:
+                self._change_clip_image(clip)
+            elif action == realign_action:
                 self._realign_images_from(clip)
             elif action == delete_action:
                 self._delete_clip(clip)
+        
+        elif clip.clip_type == "audio":
+            insert_image_action = menu.addAction("🖼️ 이 위치에 이미지 삽입...")
+            menu.addSeparator()
+            
+            action = menu.exec(pos)
+            
+            if action == insert_image_action:
+                self._insert_image_at_clip(clip)
     
     def _find_adjacent_subtitle(self, clip, direction=1):
         """Find adjacent subtitle clip (direction: 1=next, -1=prev)"""
@@ -1285,6 +1441,102 @@ class MainWindow(QMainWindow):
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage(f"이미지 {realigned_count}개가 다시 정렬되었습니다.")
     
+    def _change_clip_image(self, clip):
+        """Change the image of an image clip"""
+        # Check if there's a selected image in the list
+        selected_items = self.image_list.selectedItems()
+        
+        if selected_items:
+            # Use selected image from list
+            selected_path = selected_items[0].data(Qt.ItemDataRole.UserRole)
+            if selected_path:
+                clip.image_path = selected_path
+                clip.name = Path(selected_path).name
+                self.timeline_widget.canvas.pixmap_cache.pop(selected_path, None)  # Clear cache
+                self.timeline_widget.canvas.update()
+                
+                playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+                self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+                self.statusBar().showMessage(f"이미지가 변경되었습니다: {clip.name}")
+                return
+        
+        # Otherwise, open file dialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "이미지 선택", "",
+            "Image Files (*.png *.jpg *.jpeg *.webp);;All Files (*)"
+        )
+        if path:
+            clip.image_path = path
+            clip.name = Path(path).name
+            self.timeline_widget.canvas.pixmap_cache.pop(path, None)  # Clear cache
+            self.timeline_widget.canvas.update()
+            
+            playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+            self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+            self.statusBar().showMessage(f"이미지가 변경되었습니다: {clip.name}")
+    
+    def _insert_image_at_clip(self, audio_clip):
+        """Insert a new image clip at the position of an audio clip"""
+        from .timeline_widget import TimelineClip
+        
+        # Check if there's a selected image in the list
+        selected_items = self.image_list.selectedItems()
+        image_path = None
+        
+        if selected_items:
+            image_path = selected_items[0].data(Qt.ItemDataRole.UserRole)
+        
+        if not image_path:
+            # Open file dialog
+            path, _ = QFileDialog.getOpenFileName(
+                self, "이미지 선택", "",
+                "Image Files (*.png *.jpg *.jpeg *.webp);;All Files (*)"
+            )
+            if path:
+                image_path = path
+        
+        if not image_path:
+            return
+        
+        # Find next audio clip to determine duration
+        audio_clips = sorted(
+            [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"],
+            key=lambda c: c.start
+        )
+        
+        img_start = audio_clip.start
+        img_end = audio_clip.start + audio_clip.duration
+        
+        for i, ac in enumerate(audio_clips):
+            if ac.id == audio_clip.id and i + 1 < len(audio_clips):
+                img_end = audio_clips[i + 1].start
+                break
+        
+        # Generate unique ID
+        existing_ids = [c.id for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
+        new_id = f"img_inserted_{len(existing_ids)}"
+        
+        # Create new image clip
+        new_clip = TimelineClip(
+            id=new_id,
+            name=Path(image_path).name,
+            start=img_start,
+            duration=img_end - img_start,
+            track=2,
+            color=QColor("#9E9E9E"),
+            clip_type="image",
+            waveform=[],
+            image_path=image_path
+        )
+        
+        self.timeline_widget.canvas.clips.append(new_clip)
+        self.timeline_widget.canvas._update_total_duration()
+        self.timeline_widget.canvas.update()
+        
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage(f"이미지가 삽입되었습니다: {new_clip.name}")
+    
     def _delete_clip(self, clip):
         """Delete a clip from the timeline"""
         if clip in self.timeline_widget.canvas.clips:
@@ -1365,20 +1617,7 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             self.statusBar().showMessage(f"오디오 재생성 실패: {str(e)}")
     
-    def _on_gap_changed(self, value: int):
-        """Handle gap slider change"""
-        ms = value * 10
-        self.gap_spinbox.blockSignals(True)
-        self.gap_spinbox.setValue(ms)
-        self.gap_spinbox.blockSignals(False)
-        self.timeline_widget.set_gap(ms / 1000.0)
-    
-    def _on_gap_spinbox_changed(self, value: int):
-        """Handle gap spinbox change"""
-        self.gap_slider.blockSignals(True)
-        self.gap_slider.setValue(value // 10)
-        self.gap_slider.blockSignals(False)
-        self.timeline_widget.set_gap(value / 1000.0)
+
     
     def _on_timeline_playhead_changed(self, time_seconds: float):
         """Handle playhead change from timeline - sync to preview"""
@@ -1657,6 +1896,7 @@ class MainWindow(QMainWindow):
         self.btn_export_srt.setEnabled(False)
         self.btn_export_xml.setEnabled(False)
         self.btn_render.setEnabled(False)
+        self.btn_apply_images.setEnabled(False)
         
         # Reset preview
         self.preview_widget.clear_preview()
@@ -1868,21 +2108,13 @@ class MainWindow(QMainWindow):
         else:
             self.btn_script.setText("📂 스크립트")
         
-        # Restore image folder and list
+        # Restore image folder and list with thumbnails
         self.image_list.clear()
         print(f"Loading image folder: {self.image_folder}")
         if self.image_folder and Path(self.image_folder).exists():
             self.btn_image.setText(f"🖼️ {Path(self.image_folder).name}")
-            
-            image_folder = Path(self.image_folder)
-            images = []
-            for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-                images.extend(sorted(image_folder.glob(ext)))
-            
-            print(f"  Found {len(images)} images")
-            for img_path in images:
-                item = QListWidgetItem(f"🖼️ {img_path.name}")
-                self.image_list.addItem(item)
+            self._populate_image_list(self.image_folder)
+            print(f"  Loaded images with thumbnails")
         else:
             print(f"  Image folder not found or empty: {self.image_folder}")
             self.btn_image.setText("🖼️ 이미지 폴더")
@@ -1893,6 +2125,10 @@ class MainWindow(QMainWindow):
             self.btn_export_srt.setEnabled(True)
             self.btn_export_xml.setEnabled(True)
             self.btn_render.setEnabled(True)
+            
+            # Enable image apply button if we have images
+            if self.image_list.count() > 0:
+                self.btn_apply_images.setEnabled(True)
             
             # Load speaker audio cache for waveform regeneration
             self._load_speaker_audio_cache()
