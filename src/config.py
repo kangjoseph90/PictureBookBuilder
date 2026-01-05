@@ -23,8 +23,11 @@ CLIP_PADDING_START_MS = 50  # Extra padding before each clip starts
 CLIP_PADDING_END_MS = 150  # Extra padding after each clip ends (captures trailing sounds)
 
 # Subtitle settings
-SUBTITLE_MAX_CHARS_PER_LINE = 20
-SUBTITLE_MAX_LINES = 2
+SUBTITLE_MAX_CHARS_PER_SEGMENT = 40  # Split segments longer than this
+SUBTITLE_MAX_CHARS_PER_LINE = 20     # Line break after this many chars
+SUBTITLE_MAX_LINES = 2               # Max lines per subtitle
+SUBTITLE_SPLIT_ON_CONJUNCTIONS = True
+SUBTITLE_AUTO_SPLIT = True           # Auto-split long segments on processing
 
 # Video settings
 VIDEO_WIDTH = 1920

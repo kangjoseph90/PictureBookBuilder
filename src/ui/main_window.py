@@ -214,6 +214,13 @@ class MainWindow(QMainWindow):
         self.btn_process.setEnabled(False)
         layout.addWidget(self.btn_process)
         
+        # Subtitle auto-format button
+        self.btn_format_subtitles = QPushButton("🔧 자막 자동 정리")
+        self.btn_format_subtitles.setToolTip("자막에 줄바꿈 적용 및 긴 자막 분할")
+        self.btn_format_subtitles.clicked.connect(self._auto_format_subtitles)
+        self.btn_format_subtitles.setEnabled(False)
+        layout.addWidget(self.btn_format_subtitles)
+        
         return layout
     
     def _create_left_panel(self) -> QWidget:
@@ -307,6 +314,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.clip_edited.connect(self._on_clip_edited)
         self.timeline_widget.canvas.clip_moved.connect(self._on_clip_moved)
         self.timeline_widget.canvas.clip_double_clicked.connect(self._on_clip_double_clicked)
+        self.timeline_widget.canvas.clip_context_menu.connect(self._on_clip_context_menu)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -573,7 +581,8 @@ class MainWindow(QMainWindow):
                 color=QColor(self.timeline_widget.canvas.get_color_for_speaker(segment.dialogue.speaker)).lighter(150),
                 clip_type="subtitle", # New type
                 waveform=[],
-                segment_index=i
+                segment_index=i,
+                words=segment.words or []  # Pass word timestamps for editing
             )
             clips.append(sub_clip)
             
@@ -627,6 +636,9 @@ class MainWindow(QMainWindow):
         
         # Sync to preview widget
         self.preview_widget.set_timeline_clips(clips)
+        
+        # Enable subtitle formatting button
+        self.btn_format_subtitles.setEnabled(True)
     
     def _extract_waveform_from_audio(self, audio_segment) -> list[float]:
         """Extract normalized waveform data from an audio segment"""
@@ -771,8 +783,9 @@ class MainWindow(QMainWindow):
                 break
         if not clip: return
 
-        # Sync preview in real-time
-        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
+        # Sync preview in real-time (preserve current playhead position)
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
 
         # Update waveform only (fast path)
         try:
@@ -832,7 +845,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"클립 수정됨: {clip.name}")
         
         # Sync to preview widget for ALL types
-        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         
         # Audio regeneration is only strictly necessary for audio clips or if playhead/timing changed
         # But for simplicity, we call it to ensure everything is in sync
@@ -847,7 +861,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"클립 이동됨: {new_start:.2f}s")
         
         # Sync to preview widget
-        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         
         # Note: Clip position changes only affect timeline playback timing
         # The source audio boundaries remain the same
@@ -883,9 +898,271 @@ class MainWindow(QMainWindow):
             self.timeline_widget.canvas.update()
             self.statusBar().showMessage("자막이 수정되었습니다.")
             
-            # Since text changed, we might want to regenerate preview? 
-            # In this app, text itself doesn't affect audio synthesis (it's already done),
-            # but it will affect the exported video/SRT.
+            # Sync to preview immediately
+            playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+            self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+    
+    def _on_clip_context_menu(self, clip_id: str, pos):
+        """Show context menu for clip operations"""
+        from PyQt6.QtWidgets import QMenu
+        
+        # Find the clip
+        clip = None
+        for c in self.timeline_widget.canvas.clips:
+            if c.id == clip_id:
+                clip = c
+                break
+        
+        if not clip:
+            return
+        
+        menu = QMenu(self)
+        
+        if clip.clip_type == "subtitle":
+            edit_action = menu.addAction("✏️ 텍스트 수정")
+            split_action = menu.addAction("✂️ 자막 나누기...")
+            menu.addSeparator()
+            
+            # Find if there's a next subtitle clip
+            next_clip = self._find_adjacent_subtitle(clip, direction=1)
+            merge_action = None
+            if next_clip:
+                merge_action = menu.addAction("🔗 다음 자막과 병합")
+            
+            action = menu.exec(pos)
+            
+            if action == edit_action:
+                self._on_clip_double_clicked(clip_id)
+            elif action == split_action:
+                self._show_subtitle_editor(clip)
+            elif merge_action and action == merge_action:
+                self._merge_subtitle_clips(clip, next_clip)
+    
+    def _find_adjacent_subtitle(self, clip, direction=1):
+        """Find adjacent subtitle clip (direction: 1=next, -1=prev)"""
+        sub_clips = [c for c in self.timeline_widget.canvas.clips 
+                     if c.clip_type == "subtitle"]
+        sub_clips.sort(key=lambda c: c.start)
+        
+        try:
+            idx = next(i for i, c in enumerate(sub_clips) if c.id == clip.id)
+            target_idx = idx + direction
+            if 0 <= target_idx < len(sub_clips):
+                return sub_clips[target_idx]
+        except StopIteration:
+            pass
+        return None
+    
+    def _show_subtitle_editor(self, clip):
+        """Show dialog for splitting subtitle at a specific point"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton, QHBoxLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("자막 나누기")
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("나눌 위치의 앞 텍스트를 남기세요:"))
+        
+        text_edit = QTextEdit()
+        text_edit.setPlainText(clip.name)
+        layout.addWidget(text_edit)
+        
+        layout.addWidget(QLabel("💡 커서 위치에서 자막이 나눠집니다."))
+        
+        btn_layout = QHBoxLayout()
+        split_btn = QPushButton("나누기")
+        cancel_btn = QPushButton("취소")
+        btn_layout.addWidget(split_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        def do_split():
+            cursor_pos = text_edit.textCursor().position()
+            self._split_subtitle_at(clip, cursor_pos)
+            dialog.accept()
+        
+        split_btn.clicked.connect(do_split)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()
+    
+    def _split_subtitle_at(self, clip, char_pos: int):
+        """Split subtitle clip at character position"""
+        from core.subtitle_processor import SubtitleProcessor
+        
+        if char_pos <= 0 or char_pos >= len(clip.name):
+            self.statusBar().showMessage("나눌 위치가 올바르지 않습니다.")
+            return
+        
+        processor = SubtitleProcessor()
+        split_pos, source_split_time, word_idx = processor.find_best_split_point(
+            clip.name, clip.words, char_pos
+        )
+        
+        # Convert source audio time to timeline position
+        # source_split_time is in source audio coordinates
+        # We need to map it to timeline: clip.start + (source_split_time - first_word_time)
+        if source_split_time > 0.0 and clip.words:
+            first_word = clip.words[0] if clip.words else None
+            first_word_time = first_word.start if hasattr(first_word, 'start') else 0.0
+            # Calculate relative position in source and apply to timeline
+            relative_time = source_split_time - first_word_time
+            split_time = clip.start + relative_time
+        else:
+            # Fallback: estimate based on character position ratio
+            ratio = char_pos / len(clip.name)
+            split_time = clip.start + clip.duration * ratio
+        
+        # Use cursor position directly for text split (user intent)
+        # But adjust to keep punctuation with the preceding text
+        actual_split_pos = char_pos
+        
+        # If the character right before cursor is punctuation, include it in first part
+        # (already handled by cursor position)
+        # If the character at cursor is space, skip it
+        while actual_split_pos < len(clip.name) and clip.name[actual_split_pos] == ' ':
+            actual_split_pos += 1
+        
+        # Create two new clips
+        text1 = clip.name[:actual_split_pos].strip()
+        text2 = clip.name[actual_split_pos:].strip()
+        words1 = clip.words[:word_idx + 1] if clip.words else []
+        words2 = clip.words[word_idx + 1:] if clip.words else []
+        
+        # Save original end time before modifying
+        original_end = clip.start + clip.duration
+        
+        # Update original clip
+        clip.name = text1
+        clip.duration = split_time - clip.start
+        clip.words = words1
+        
+        # Create new clip with remaining duration
+        from ui.timeline_widget import TimelineClip
+        new_id = f"{clip.id}_split"
+        new_duration = original_end - split_time
+        
+        new_clip = TimelineClip(
+            id=new_id,
+            name=text2,
+            start=split_time,
+            duration=new_duration,
+            track=clip.track,
+            color=clip.color,
+            clip_type="subtitle",
+            waveform=[],
+            segment_index=-1,
+            words=words2
+        )
+        
+        self.timeline_widget.canvas.clips.append(new_clip)
+        self.timeline_widget.canvas.update()
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage("자막이 나눠졌습니다.")
+    
+    def _merge_subtitle_clips(self, clip1, clip2):
+        """Merge two adjacent subtitle clips"""
+        from core.subtitle_processor import SubtitleProcessor
+        
+        processor = SubtitleProcessor()
+        merged = processor.merge_segments(
+            {'text': clip1.name, 'start_time': clip1.start, 
+             'end_time': clip1.start + clip1.duration, 'words': clip1.words},
+            {'text': clip2.name, 'start_time': clip2.start,
+             'end_time': clip2.start + clip2.duration, 'words': clip2.words}
+        )
+        
+        # Update first clip
+        clip1.name = merged['text']
+        clip1.duration = merged['end_time'] - merged['start_time']
+        clip1.words = merged['words']
+        
+        # Remove second clip
+        self.timeline_widget.canvas.clips.remove(clip2)
+        self.timeline_widget.canvas.update()
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage("자막이 병합되었습니다.")
+    
+    def _auto_format_subtitles(self):
+        """Apply automatic formatting to all subtitle clips"""
+        from core.subtitle_processor import SubtitleProcessor
+        from config import (SUBTITLE_MAX_CHARS_PER_SEGMENT, SUBTITLE_MAX_CHARS_PER_LINE,
+                          SUBTITLE_MAX_LINES, SUBTITLE_SPLIT_ON_CONJUNCTIONS)
+        from ui.timeline_widget import TimelineClip
+        
+        processor = SubtitleProcessor(
+            max_chars_per_segment=SUBTITLE_MAX_CHARS_PER_SEGMENT,
+            max_chars_per_line=SUBTITLE_MAX_CHARS_PER_LINE,
+            max_lines=SUBTITLE_MAX_LINES,
+            split_on_conjunctions=SUBTITLE_SPLIT_ON_CONJUNCTIONS
+        )
+        
+        # Collect subtitle clips
+        subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
+        
+        if not subtitle_clips:
+            self.statusBar().showMessage("자막 클립이 없습니다.")
+            return
+        
+        new_clips = []
+        existing_non_subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type != "subtitle"]
+        
+        split_count = 0
+        format_count = 0
+        
+        for clip in subtitle_clips:
+            original_text = clip.name
+            
+            # 1. Check if needs splitting
+            if len(original_text) > SUBTITLE_MAX_CHARS_PER_SEGMENT and clip.words:
+                # Split the segment
+                segments = processor.split_segment(
+                    original_text,
+                    clip.start,
+                    clip.start + clip.duration,
+                    clip.words
+                )
+                
+                for i, seg in enumerate(segments):
+                    # Apply line formatting to each segment
+                    formatted_text = processor.format_lines(seg['text'])
+                    
+                    new_clip = TimelineClip(
+                        id=f"{clip.id}_fmt_{i}" if i > 0 else clip.id,
+                        name=formatted_text,
+                        start=seg['start_time'],
+                        duration=seg['end_time'] - seg['start_time'],
+                        track=clip.track,
+                        color=clip.color,
+                        clip_type="subtitle",
+                        waveform=[],
+                        segment_index=clip.segment_index if i == 0 else -1,
+                        words=seg['words']
+                    )
+                    new_clips.append(new_clip)
+                
+                if len(segments) > 1:
+                    split_count += 1
+            else:
+                # Just apply line formatting
+                formatted_text = processor.format_lines(original_text)
+                clip.name = formatted_text
+                new_clips.append(clip)
+                
+                if formatted_text != original_text:
+                    format_count += 1
+        
+        # Replace subtitle clips
+        self.timeline_widget.canvas.clips = existing_non_subtitle_clips + new_clips
+        self.timeline_widget.canvas.update()
+        
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        
+        self.statusBar().showMessage(f"자막 정리 완료: {split_count}개 분할, {format_count}개 줄바꿈 적용")
     
     def _regenerate_preview_from_clips(self):
         """Regenerate preview audio based on current clip data"""

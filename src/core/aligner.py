@@ -17,6 +17,7 @@ class AlignedSegment:
     start_time: float
     end_time: float
     confidence: float  # Matching confidence 0-100
+    words: list = None  # Word-level timestamps for precise editing
 
 
 class Aligner:
@@ -95,7 +96,8 @@ class Aligner:
                 dialogue=dialogue,
                 start_time=best_match[0].start,
                 end_time=best_match[-1].end,
-                confidence=best_score
+                confidence=best_score,
+                words=best_match  # Include word-level timestamps
             )
             return aligned, best_end_idx
         

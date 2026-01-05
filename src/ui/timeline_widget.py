@@ -34,6 +34,7 @@ class TimelineClip:
     source_end: float = 0.0    # End time in original audio
     segment_index: int = -1    # Index in result_data['aligned']
     speaker: str = ""          # Speaker name for audio lookup
+    words: list = field(default_factory=list)  # Word timestamps for subtitle editing
     
     @property
     def end(self) -> float:
@@ -48,6 +49,7 @@ class TimelineCanvas(QWidget):
     clip_editing = pyqtSignal(str)  # Emits during dragging/editing
     clip_edited = pyqtSignal(str)  # Emits clip id when source boundaries changed
     clip_double_clicked = pyqtSignal(str)  # Emits clip id
+    clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     
     EDGE_THRESHOLD = 8  # Pixels from edge to trigger resize
@@ -355,14 +357,24 @@ class TimelineCanvas(QWidget):
             if max_chars > 3 and len(label) > max_chars:
                 label = label[:max_chars-2] + ".."
             
-            # Draw label with shadow for readability
-            text_rect = QRectF(x + 4, y + 2, width - 8, 14)
-            painter.setPen(QPen(QColor(0, 0, 0, 150)))
-            painter.drawText(text_rect.adjusted(1, 1, 1, 1), 
-                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
-            painter.setPen(QPen(Qt.GlobalColor.white))
-            painter.drawText(text_rect, 
-                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+            # For subtitle clips, center the text vertically
+            if clip.clip_type == "subtitle":
+                text_rect = QRectF(x + 2, y, width - 4, height)
+                painter.setPen(QPen(QColor(0, 0, 0, 150)))
+                painter.drawText(text_rect.adjusted(1, 1, 1, 1), 
+                               Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                painter.setPen(QPen(Qt.GlobalColor.white))
+                painter.drawText(text_rect, 
+                               Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+            else:
+                # Draw label with shadow for readability (top)
+                text_rect = QRectF(x + 4, y + 2, width - 8, 14)
+                painter.setPen(QPen(QColor(0, 0, 0, 150)))
+                painter.drawText(text_rect.adjusted(1, 1, 1, 1), 
+                               Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                painter.setPen(QPen(Qt.GlobalColor.white))
+                painter.drawText(text_rect, 
+                               Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
     
     def _draw_thumbnail(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
@@ -405,9 +417,9 @@ class TimelineCanvas(QWidget):
         if num_samples == 0 or width < 2:
             return
         
-        # Leave space for label at top
-        wave_y = y + 16
-        wave_height = height - 18
+        # Center waveform in track (reduced top offset for better centering)
+        wave_y = y + 4
+        wave_height = height - 6
         center_y = wave_y + wave_height / 2
         
         # Create path for waveform
@@ -496,6 +508,9 @@ class TimelineCanvas(QWidget):
                 self.drag_clip_start = clip.start
                 # Store all clip positions for ripple dragging
                 self.drag_initial_positions = {c.id: c.start for c in self.clips}
+            elif event.button() == Qt.MouseButton.RightButton:
+                # Show context menu
+                self.clip_context_menu.emit(clip.id, event.globalPosition().toPoint())
         else:
             self.selected_clip = None
             # Click on empty area - move playhead

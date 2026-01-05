@@ -51,6 +51,8 @@ class PreviewWidget(QWidget):
         # Subtitle overlay (on top of image)
         self.subtitle_label = QLabel(self.image_label)
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Word wrap disabled - only show line breaks that are explicitly in the text
+        self.subtitle_label.setWordWrap(False)
         self.subtitle_label.setStyleSheet("""
             QLabel {
                 color: white;
@@ -137,8 +139,13 @@ class PreviewWidget(QWidget):
         if initial_pos_ms <= 0:
             self.image_label.setText("▶️ 재생 버튼을 누르세요")
     
-    def set_timeline_clips(self, clips: list):
-        """Update preview data from timeline clips"""
+    def set_timeline_clips(self, clips: list, playhead_ms: int = None):
+        """Update preview data from timeline clips
+        
+        Args:
+            clips: List of timeline clips
+            playhead_ms: Current playhead position in ms (if None, uses media player position)
+        """
         self.image_clips = []
         self.subtitle_clips = []
         
@@ -156,8 +163,10 @@ class PreviewWidget(QWidget):
                     'end': clip.start + clip.duration
                 })
         
-        # Initial search for current position
-        if self.media_player.position() >= 0:
+        # Update display for current position
+        if playhead_ms is not None:
+            self._on_position_changed(playhead_ms)
+        elif self.media_player.position() >= 0:
             self._on_position_changed(self.media_player.position())
 
     def _get_current_image(self, position_ms: int) -> Optional[str]:
