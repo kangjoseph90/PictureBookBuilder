@@ -330,6 +330,10 @@ class MainWindow(QMainWindow):
         preview_group = QGroupBox("미리보기")
         preview_group_layout = QVBoxLayout(preview_group)
         self.preview_widget = PreviewWidget()
+        
+        # Connect preview position to timeline
+        self.preview_widget.position_changed.connect(self._on_preview_position_changed)
+        
         preview_group_layout.addWidget(self.preview_widget)
         preview_layout.addWidget(preview_group)
         
@@ -1375,6 +1379,16 @@ class MainWindow(QMainWindow):
         self.gap_slider.setValue(value // 10)
         self.gap_slider.blockSignals(False)
         self.timeline_widget.set_gap(value / 1000.0)
+    
+    def _on_timeline_playhead_changed(self, time_seconds: float):
+        """Handle playhead change from timeline - sync to preview"""
+        position_ms = int(time_seconds * 1000)
+        self.preview_widget.media_player.setPosition(position_ms)
+    
+    def _on_preview_position_changed(self, position_ms: int):
+        """Handle position change from preview - sync to timeline"""
+        time_seconds = position_ms / 1000.0
+        self.timeline_widget.set_playhead(time_seconds)
     
     def _export_srt(self):
         """Export SRT file"""

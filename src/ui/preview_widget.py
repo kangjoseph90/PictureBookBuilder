@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QStyle
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -251,6 +251,9 @@ class PreviewWidget(QWidget):
         """Handle position updates during playback"""
         if self.is_seeking:
             return
+        
+        # Emit signal to sync with timeline
+        self.position_changed.emit(position)
         
         # Update time display
         self.time_label.setText(
