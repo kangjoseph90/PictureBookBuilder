@@ -1000,9 +1000,6 @@ class MainWindow(QMainWindow):
     
     def _on_clip_editing(self, clip_id: str):
         """Handle real-time clip boundary change - fast waveform update only"""
-        if not self.result_data:
-            return
-            
         # Find the editing clip
         clip = None
         for c in self.timeline_widget.canvas.clips:
@@ -1020,8 +1017,8 @@ class MainWindow(QMainWindow):
             from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
             
             # Check cache for speaker audio
+            speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
             if clip.speaker not in self.speaker_audio_cache:
-                speaker_audio_map = self.result_data.get('speaker_audio_map', {})
                 audio_path = speaker_audio_map.get(clip.speaker)
                 if audio_path:
                     from pydub import AudioSegment
@@ -1048,9 +1045,6 @@ class MainWindow(QMainWindow):
 
     def _on_clip_edited(self, clip_id: str):
         """Handle final clip boundary edit - sync to result_data and regenerate audio"""
-        if not self.result_data:
-            return
-        
         # Find the edited clip
         clip = None
         for c in self.timeline_widget.canvas.clips:
@@ -1062,7 +1056,7 @@ class MainWindow(QMainWindow):
             return
         
         # Audio-specific source boundary update
-        if clip.clip_type == "audio" and clip.segment_index >= 0:
+        if clip.clip_type == "audio" and clip.segment_index >= 0 and self.result_data:
             aligned = self.result_data.get('aligned', [])
             if clip.segment_index < len(aligned):
                 segment = aligned[clip.segment_index]
