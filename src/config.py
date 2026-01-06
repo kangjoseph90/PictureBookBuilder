@@ -7,6 +7,8 @@ import torch
 
 # Whisper settings
 WHISPER_MODEL = "medium" #"large-v3"
+USE_STABLE_TS = True  # True: stable-ts (정확한 타이밍), False: faster-whisper (빠른 속도)
+
 if torch.cuda.is_available():
     WHISPER_DEVICE = "cuda"
     WHISPER_COMPUTE_TYPE = "float16"
