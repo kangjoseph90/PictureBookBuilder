@@ -252,20 +252,32 @@ class SubtitleProcessor:
         words1 = words[:word_idx + 1] if words else []
         words2 = words[word_idx + 1:] if words else []
         
-        # 타임라인 위치 계산
+        # 타임라인 위치 계산 (첫 세그먼트 끝 = 마지막 단어 끝 시간 기준)
         timeline_split_time = self._calculate_split_time(
             text, best_break, start_time, end_time, words
         )
         
+        # 두 번째 세그먼트 시작 시간 계산 (자신의 첫 단어 시작 시간 기준)
+        # 중요: words2의 첫 단어 시작 시간을 사용해야 함 (gap이 있을 수 있음)
+        if words2:
+            first_word = words[0] if words else None
+            first_word_time = first_word.start if first_word and hasattr(first_word, 'start') else 0.0
+            second_first_word = words2[0]
+            second_first_word_time = second_first_word.start if hasattr(second_first_word, 'start') else 0.0
+            second_segment_start = start_time + (second_first_word_time - first_word_time)
+        else:
+            second_segment_start = timeline_split_time
+        
+        # 첫 세그먼트 끝 = 두 번째 세그먼트 시작 (gap 없이 연결)
         result1 = {
             'text': text1,
             'start_time': start_time,
-            'end_time': timeline_split_time,
+            'end_time': second_segment_start,
             'words': words1
         }
         
         # 재귀적으로 나머지 처리
-        result2_list = self.split_segment(text2, timeline_split_time, end_time, words2)
+        result2_list = self.split_segment(text2, second_segment_start, end_time, words2)
         
         return [result1] + result2_list
     
@@ -296,33 +308,32 @@ class SubtitleProcessor:
         end_time: float,
         words: list
     ) -> float:
-        """Calculate timeline split time from character position"""
+        """Calculate timeline split time from character position
+        
+        Uses absolute time difference method (same as manual split)
+        """
         if not words:
-            ratio = char_pos / len(text)
+            # Fallback: ratio based
+            ratio = char_pos / len(text) if len(text) > 0 else 0.5
             return start_time + (end_time - start_time) * ratio
         
-        # 소스 오디오 범위 계산
-        first_word = words[0] if words else None
-        last_word = words[-1] if words else None
+        # Get first word's start time as reference
+        first_word = words[0]
+        first_word_time = first_word.start if hasattr(first_word, 'start') else 0.0
         
-        first_time = first_word.start if hasattr(first_word, 'start') else 0.0
-        last_time = last_word.end if hasattr(last_word, 'end') else first_time
-        source_duration = last_time - first_time
-        
-        if source_duration <= 0:
-            ratio = char_pos / len(text)
-            return start_time + (end_time - start_time) * ratio
-        
-        # 분할 위치의 단어 찾기
+        # Find the word at split position
         word_idx = self._find_word_index_at_position(text, words, char_pos)
+        
         if word_idx < len(words):
             split_word = words[word_idx]
-            source_split_time = split_word.end if hasattr(split_word, 'end') else first_time
+            source_split_time = split_word.end if hasattr(split_word, 'end') else first_word_time
             
-            relative_pos = (source_split_time - first_time) / source_duration
-            return start_time + (end_time - start_time) * relative_pos
+            # Absolute time difference method (matches manual split)
+            relative_time = source_split_time - first_word_time
+            return start_time + relative_time
         
-        ratio = char_pos / len(text)
+        # Fallback: ratio based
+        ratio = char_pos / len(text) if len(text) > 0 else 0.5
         return start_time + (end_time - start_time) * ratio
     
     def find_best_split_point(

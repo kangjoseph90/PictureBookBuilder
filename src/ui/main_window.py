@@ -56,6 +56,11 @@ class ProcessingThread(QThread):
                 self.finished.emit(False, f"오디오 파일이 지정되지 않은 화자: {', '.join(missing_speakers)}", None)
                 return
             
+            # Step 2.5: Build initial prompt from script for Whisper
+            script_text = ' '.join(d.text for d in dialogues)
+            initial_prompt = self._build_whisper_prompt(speakers, script_text)
+            print(f"Whisper initial prompt: {initial_prompt}")
+            
             # Step 3: Transcribe audio files
             self.progress.emit(20, "오디오 변환 중 (Whisper)...")
             transcriber = Transcriber()
@@ -66,7 +71,11 @@ class ProcessingThread(QThread):
                 if audio_path:
                     progress = 20 + int((i / total_speakers) * 25)
                     self.progress.emit(progress, f"Whisper 변환 중: {speaker}...")
-                    transcriptions[speaker] = transcriber.transcribe(audio_path)
+                    transcriptions[speaker] = transcriber.transcribe(
+                        audio_path, 
+                        language="ko",
+                        initial_prompt=initial_prompt
+                    )
             
             # Step 4: Align dialogues
             self.progress.emit(50, "대사 정렬 중...")
@@ -137,6 +146,39 @@ class ProcessingThread(QThread):
             import traceback
             traceback.print_exc()
             self.finished.emit(False, f"오류 발생: {str(e)}", None)
+    
+    def _build_whisper_prompt(self, speakers: list[str], script_text: str, max_length: int = 200) -> str:
+        """Build initial prompt for Whisper from speakers and script keywords
+        
+        Args:
+            speakers: List of speaker names (e.g., ["흥부", "놀부"])
+            script_text: Full script text
+            max_length: Maximum prompt length
+            
+        Returns:
+            Comma-separated prompt string
+        """
+        import re
+        from collections import Counter
+        
+        # Start with speaker names (确定的固有名詞)
+        prompt_parts = list(speakers)
+        
+        # Extract 3+ char Korean words and count frequency
+        words = re.findall(r'[가-힣]{3,}', script_text)
+        word_freq = Counter(words)
+        
+        # Add top frequent words (excluding already added speakers)
+        speaker_set = set(speakers)
+        top_words = [w for w, _ in word_freq.most_common(30) if w not in speaker_set]
+        prompt_parts.extend(top_words[:20])
+        
+        # Join and truncate to max_length
+        result = ', '.join(dict.fromkeys(prompt_parts))  # Remove duplicates, keep order
+        if len(result) > max_length:
+            result = result[:max_length].rsplit(', ', 1)[0]
+        
+        return result
 
 
 class MainWindow(QMainWindow):
@@ -1211,18 +1253,29 @@ class MainWindow(QMainWindow):
         )
         
         # Convert source audio time to timeline position
-        # source_split_time is in source audio coordinates
-        # We need to map it to timeline: clip.start + (source_split_time - first_word_time)
-        if source_split_time > 0.0 and clip.words:
-            first_word = clip.words[0] if clip.words else None
+        # source_split_time is in source audio coordinates (word.end)
+        # Now we use NEXT word's START time for more accurate split
+        if clip.words:
+            first_word = clip.words[0]
             first_word_time = first_word.start if hasattr(first_word, 'start') else 0.0
-            # Calculate relative position in source and apply to timeline
-            relative_time = source_split_time - first_word_time
-            split_time = clip.start + relative_time
+            
+            # words2 will start from word_idx + 1
+            words2 = clip.words[word_idx + 1:] if word_idx + 1 < len(clip.words) else []
+            
+            if words2:
+                # Use second segment's first word start time
+                second_first_word = words2[0]
+                second_first_word_time = second_first_word.start if hasattr(second_first_word, 'start') else 0.0
+                split_time = clip.start + (second_first_word_time - first_word_time)
+            else:
+                # No second segment words, use original split time
+                relative_time = source_split_time - first_word_time
+                split_time = clip.start + relative_time
         else:
             # Fallback: estimate based on character position ratio
             ratio = char_pos / len(clip.name)
             split_time = clip.start + clip.duration * ratio
+            words2 = []
         
         # Use cursor position directly for text split (user intent)
         # But adjust to keep punctuation with the preceding text
@@ -1238,17 +1291,17 @@ class MainWindow(QMainWindow):
         text1 = clip.name[:actual_split_pos].strip()
         text2 = clip.name[actual_split_pos:].strip()
         words1 = clip.words[:word_idx + 1] if clip.words else []
-        words2 = clip.words[word_idx + 1:] if clip.words else []
+        # words2 already computed above
         
         # Save original end time before modifying
         original_end = clip.start + clip.duration
         
-        # Update original clip
+        # Update original clip (first segment ends at split_time)
         clip.name = text1
         clip.duration = split_time - clip.start
         clip.words = words1
         
-        # Create new clip with remaining duration
+        # Create new clip (second segment starts at split_time)
         from ui.timeline_widget import TimelineClip
         new_id = f"{clip.id}_split"
         new_duration = original_end - split_time
