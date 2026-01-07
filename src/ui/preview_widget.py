@@ -8,7 +8,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QStyle
+    QSlider, QStyle, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -89,7 +89,20 @@ class PreviewWidget(QWidget):
         
         # Playback controls
         controls_layout = QHBoxLayout()
+        
+        self.status_label = QLabel("대기 중")
+        self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setFixedWidth(60) # Fixed width to prevent shifting
+        controls_layout.addWidget(self.status_label)
+        
         controls_layout.addStretch()
+        
+        self.btn_start = QPushButton()
+        self.btn_start.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
+        self.btn_start.setToolTip("맨 앞으로")
+        self.btn_start.clicked.connect(self._go_to_start)
+        self.btn_start.setFixedWidth(40)
+        controls_layout.addWidget(self.btn_start)
         
         self.btn_play = QPushButton()
         self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -104,12 +117,23 @@ class PreviewWidget(QWidget):
         self.btn_stop.clicked.connect(self._stop)
         self.btn_stop.setFixedWidth(40)
         controls_layout.addWidget(self.btn_stop)
+
+        self.btn_end = QPushButton()
+        self.btn_end.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
+        self.btn_end.setToolTip("맨 뒤로")
+        self.btn_end.clicked.connect(self._go_to_end)
+        self.btn_end.setFixedWidth(40)
+        controls_layout.addWidget(self.btn_end)
         
         controls_layout.addStretch()
         
-        self.status_label = QLabel("대기 중")
-        self.status_label.setStyleSheet("color: gray;")
-        controls_layout.addWidget(self.status_label)
+        # Speed control on the right
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
+        self.speed_combo.setCurrentIndex(2) # 1.0x
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        self.speed_combo.setFixedWidth(70)
+        controls_layout.addWidget(self.speed_combo)
         
         layout.addLayout(controls_layout)
     
@@ -378,8 +402,27 @@ class PreviewWidget(QWidget):
         """Stop playback"""
         self.media_player.stop()
         self.seek_slider.setValue(0)
-        if self.image_clips:
-            self.set_image(self.image_clips[0]['path'])
+        # We don't necessarily want to reset image on stop, 
+        # but let's sync with start of audio if available
+        self.media_player.setPosition(0)
+    
+    def _go_to_start(self):
+        """Skip to the beginning"""
+        self.media_player.setPosition(0)
+    
+    def _go_to_end(self):
+        """Skip to the end"""
+        if self.total_duration > 0:
+            self.media_player.setPosition(int(self.total_duration * 1000))
+            
+    def _on_speed_changed(self, index: int):
+        """Handle playback speed change"""
+        speed_text = self.speed_combo.currentText().replace("x", "")
+        try:
+            speed = float(speed_text)
+            self.media_player.setPlaybackRate(speed)
+        except ValueError:
+            pass
     
     def _on_seek_start(self):
         """Called when user starts dragging the seek slider"""
