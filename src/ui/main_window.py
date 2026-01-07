@@ -15,9 +15,77 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QIcon, QPixmap
+from typing import TYPE_CHECKING
 
 from .timeline_widget import TimelineWidget
 from .preview_widget import PreviewWidget
+from config import DEFAULT_GAP_SECONDS
+
+if TYPE_CHECKING:
+    from pydub import AudioSegment
+
+
+class RenderThread(QThread):
+    """Background thread for video rendering"""
+    progress = pyqtSignal(int, str)  # progress %, status message
+    finished = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, image_clips, audio_path, subtitle_clips, output_path):
+        super().__init__()
+        self.image_clips = image_clips
+        self.audio_path = audio_path
+        self.subtitle_clips = subtitle_clips
+        self.output_path = output_path
+    
+    def run(self):
+        try:
+            from exporters.video_renderer import VideoRenderer, ImageSegment, SubtitleSegment
+            
+            self.progress.emit(0, "렌더링 준비 중...")
+            
+            # Convert clips to renderer format
+            images = [
+                ImageSegment(
+                    image_path=img.image_path or "",
+                    start_time=img.start,
+                    end_time=img.start + img.duration,
+                    track=getattr(img, "track", 0)
+                )
+                for img in self.image_clips
+            ]
+            
+            subtitles = None
+            if self.subtitle_clips:
+                subtitles = [
+                    SubtitleSegment(
+                        text=sub.name,
+                        start_time=sub.start,
+                        end_time=sub.start + sub.duration
+                    )
+                    for sub in self.subtitle_clips
+                ]
+            
+            renderer = VideoRenderer()
+            self.progress.emit(10, "비디오 렌더링 중...")
+            
+            # Render with progress callback
+            renderer.render(
+                images=images,
+                audio_path=str(self.audio_path),
+                subtitles=subtitles,
+                output_path=str(self.output_path),
+                progress_callback=self._on_render_progress
+            )
+            
+            self.progress.emit(100, "완료")
+            self.finished.emit(True, f"영상이 저장되었습니다:\n{self.output_path}")
+            
+        except Exception as e:
+            self.finished.emit(False, f"렌더링 실패: {str(e)}")
+    
+    def _on_render_progress(self, progress: int, message: str):
+        """Callback from renderer for progress updates"""
+        self.progress.emit(progress, message)
 
 
 class ProcessingThread(QThread):
@@ -764,7 +832,7 @@ class MainWindow(QMainWindow):
         clips = []
         current_time = 0.0
         current_time = 0.0
-        gap = 0.5  # Default gap 0.5s (hardcoded)
+        gap = DEFAULT_GAP_SECONDS
         
         # Load speaker audio files for waveform extraction
         speaker_audio: dict[str, AudioSegment] = {}
@@ -921,7 +989,7 @@ class MainWindow(QMainWindow):
             
             aligned = result.get('aligned', [])
             speaker_audio_map = result.get('speaker_audio_map', {})
-            gap = 0.5  # Default gap 0.5s (hardcoded)
+            gap = DEFAULT_GAP_SECONDS
             
             if not aligned:
                 return
@@ -1921,8 +1989,10 @@ class MainWindow(QMainWindow):
     
     def _export_srt(self):
         """Export SRT file"""
-        if not self.result_data or 'aligned' not in self.result_data:
-            QMessageBox.warning(self, "오류", "먼저 처리를 완료하세요.")
+        # Allow export from loaded projects (timeline clips are the source of truth)
+        sub_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
+        if not sub_clips:
+            QMessageBox.warning(self, "오류", "내보낼 자막 클립이 없습니다.")
             return
         
         path, _ = QFileDialog.getSaveFileName(
@@ -1933,7 +2003,6 @@ class MainWindow(QMainWindow):
                 from exporters.srt_generator import SRTGenerator
                 
                 # Get subtitle clips from timeline
-                sub_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
                 sub_clips.sort(key=lambda c: c.start)
                 
                 texts = []
@@ -1953,8 +2022,9 @@ class MainWindow(QMainWindow):
     
     def _export_xml(self):
         """Export XML file"""
-        if not self.result_data or 'aligned' not in self.result_data:
-            QMessageBox.warning(self, "오류", "먼저 처리를 완료하세요.")
+        # Allow export from loaded projects: export current timeline state.
+        if not self.timeline_widget.canvas.clips:
+            QMessageBox.warning(self, "오류", "내보낼 타임라인 클립이 없습니다.")
             return
         
         path, _ = QFileDialog.getSaveFileName(
@@ -1963,28 +2033,49 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 from exporters.xml_exporter import XMLExporter, TimelineClip
-                
-                aligned = self.result_data['aligned']
-                speaker_audio_map = self.result_data.get('speaker_audio_map', {})
-                gap = self.gap_spinbox.value() / 1000.0
-                
-                clips = []
-                current_time = 0.0
-                
-                for i, segment in enumerate(aligned):
-                    duration = segment.end_time - segment.start_time
-                    audio_path = speaker_audio_map.get(segment.dialogue.speaker, "")
-                    
-                    clip = TimelineClip(
-                        name=f"{segment.dialogue.speaker}: {segment.dialogue.text[:20]}",
-                        file_path=audio_path,
-                        start_time=current_time,
-                        end_time=current_time + duration,
-                        track=1,
-                        clip_type="audio"
-                    )
-                    clips.append(clip)
-                    current_time += duration + gap
+
+                speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
+
+                clips: list[TimelineClip] = []
+                for clip in self.timeline_widget.canvas.clips:
+                    if clip.clip_type == "audio":
+                        speaker = clip.speaker
+                        if not speaker and ":" in (clip.name or ""):
+                            speaker = clip.name.split(":")[0].strip()
+
+                        audio_path = speaker_audio_map.get(speaker, "") if speaker else ""
+                        if not audio_path:
+                            # Skip clips we can't resolve to a source file
+                            continue
+
+                        clips.append(
+                            TimelineClip(
+                                name=clip.name,
+                                file_path=audio_path,
+                                start_time=clip.start,
+                                end_time=clip.start + clip.duration,
+                                track=clip.track,
+                                clip_type="audio",
+                            )
+                        )
+
+                    elif clip.clip_type == "image":
+                        if not clip.image_path:
+                            continue
+                        clips.append(
+                            TimelineClip(
+                                name=clip.name,
+                                file_path=clip.image_path,
+                                start_time=clip.start,
+                                end_time=clip.start + clip.duration,
+                                track=clip.track,
+                                clip_type="video",
+                            )
+                        )
+
+                if not clips:
+                    QMessageBox.warning(self, "오류", "XML로 내보낼 수 있는 클립(오디오/이미지)을 찾지 못했습니다.")
+                    return
                 
                 exporter = XMLExporter()
                 exporter.save(clips, path)
@@ -1994,9 +2085,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "오류", f"XML 저장 실패: {str(e)}")
     
     def _render_video(self):
-        """Render final video by merging audio clips"""
-        if not self.result_data or 'aligned' not in self.result_data:
-            QMessageBox.warning(self, "오류", "먼저 처리를 완료하세요.")
+        """Render final video by launching background thread"""
+        # Allow rendering from loaded projects (timeline clips are the source of truth)
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
+        if not audio_clips:
+            QMessageBox.warning(self, "오류", "렌더링할 오디오 클립이 없습니다.")
             return
         
         path, _ = QFileDialog.getSaveFileName(
@@ -2005,18 +2098,37 @@ class MainWindow(QMainWindow):
         if not path:
             return
         
-        # For now, just merge audio (no video/images yet)
-        self.statusBar().showMessage("오디오 병합 중...")
-        self.btn_render.setEnabled(False)
+        # For .wav, just merge audio synchronously
+        if path.endswith('.wav'):
+            self._export_audio_only(path)
+            return
         
+        # For .mp4, launch render thread
+        self.btn_render.setEnabled(False)
+        self.statusBar().showMessage("렌더링 준비 중...")
+        
+        # Collect image and subtitle clips
+        image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
+        subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
+        
+        # Create and start render thread
+        self.render_thread = RenderThread(
+            image_clips=image_clips,
+            audio_path=self.preview_audio_path,  # Use merged preview audio
+            subtitle_clips=subtitle_clips,
+            output_path=path
+        )
+        self.render_thread.progress.connect(self._on_render_progress)
+        self.render_thread.finished.connect(self._on_render_finished)
+        self.render_thread.start()
+    
+    def _export_audio_only(self, path: str):
+        """Export audio-only .wav file"""
         try:
             from pydub import AudioSegment
-            from pathlib import Path as P
             
-            aligned = self.result_data['aligned']
-            speaker_audio_map = self.result_data.get('speaker_audio_map', {})
-            gap = self.gap_spinbox.value() / 1000.0
-            
+            speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
+
             # Load speaker audio files
             speaker_audio: dict[str, AudioSegment] = {}
             for speaker, audio_path in speaker_audio_map.items():
@@ -2053,90 +2165,24 @@ class MainWindow(QMainWindow):
                     result_audio += audio_clip
                     current_pos = clip.start + len(audio_clip) / 1000.0
             
-            # Export based on file extension
-            if path.endswith('.wav'):
-                result_audio.export(path, format='wav')
-            else:
-                # For mp4, we need images. For now, just export audio
-                audio_path = path.replace('.mp4', '.wav')
-                result_audio.export(audio_path, format='wav')
-                
-                # Check if we have images
-                if self.image_folder:
-                    self._render_with_images(audio_path, path)
-                else:
-                    QMessageBox.information(
-                        self, "오디오 저장 완료", 
-                        f"이미지 폴더가 지정되지 않아 오디오만 저장되었습니다:\n{audio_path}\n\n"
-                        "영상으로 만들려면 이미지 폴더를 지정하세요."
-                    )
-                    self.btn_render.setEnabled(True)
-                    self.statusBar().showMessage("오디오 저장 완료")
-                    return
-            
-            self.btn_render.setEnabled(True)
-            self.statusBar().showMessage("렌더링 완료")
-            QMessageBox.information(self, "렌더링 완료", f"파일이 저장되었습니다:\n{path}")
-            
+            result_audio.export(path, format='wav')
+            QMessageBox.information(self, "저장 완료", f"파일이 저장되었습니다:\n{path}")
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.btn_render.setEnabled(True)
-            self.statusBar().showMessage("렌더링 오류")
-            QMessageBox.critical(self, "오류", f"렌더링 실패: {str(e)}")
+            QMessageBox.critical(self, "오류", f"오디오 내보내기 실패: {str(e)}")
     
-    def _render_with_images(self, audio_path: str, output_path: str):
-        """Render video with images and subtitles using timeline data"""
-        try:
-            from exporters.video_renderer import VideoRenderer, ImageSegment, SubtitleSegment
-            
-            # Collect data from timeline
-            image_segments = []
-            subtitle_segments = []
-            
-            for clip in self.timeline_widget.canvas.clips:
-                if clip.clip_type == "image":
-                    image_segments.append(ImageSegment(
-                        image_path=clip.image_path,
-                        start_time=clip.start,
-                        end_time=clip.start + clip.duration
-                    ))
-                elif clip.clip_type == "subtitle":
-                    subtitle_segments.append(SubtitleSegment(
-                        text=clip.name,
-                        start_time=clip.start,
-                        end_time=clip.start + clip.duration
-                    ))
-            
-            # Sort segments
-            image_segments.sort(key=lambda x: x.start_time)
-            subtitle_segments.sort(key=lambda x: x.start_time)
-            
-            # Use VideoRenderer
-            renderer = VideoRenderer()
-            renderer.render(
-                images=image_segments,
-                audio_path=audio_path,
-                subtitles=subtitle_segments,
-                output_path=output_path
-            )
-            
-            QMessageBox.information(self, "렌더링 완료", f"영상이 저장되었습니다:\n{output_path}")
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "오류", f"영상 렌더링 실패: {str(e)}")
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "오류", f"영상 렌더링 실패: {str(e)}")
-        finally:
-            self.btn_render.setEnabled(True)
+    def _on_render_progress(self, progress: int, message: str):
+        """Handle render thread progress update"""
+        self.statusBar().showMessage(f"{message} ({progress}%)")
+    
+    def _on_render_finished(self, success: bool, message: str):
+        """Handle render thread completion"""
+        self.btn_render.setEnabled(True)
+        if success:
             self.statusBar().showMessage("렌더링 완료")
-
-
+            QMessageBox.information(self, "완료", message)
+        else:
+            self.statusBar().showMessage("렌더링 실패")
+            QMessageBox.critical(self, "오류", message)
     def _new_project(self):
         """Create a new project"""
         from PyQt6.QtWidgets import QMessageBox
