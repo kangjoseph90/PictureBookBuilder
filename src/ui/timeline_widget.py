@@ -958,12 +958,17 @@ class TimelineCanvas(QWidget):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # Zoom
             delta = event.angleDelta().y() / 120
+            
+            # anchor_time: the time coordinate actually under the mouse (before zoom change)
+            anchor_time = self.x_to_time(event.position().x())
+            
             old_zoom = self.zoom
             self.zoom = max(20, min(500, self.zoom * (1.1 ** delta)))
             
-            # Adjust scroll to keep mouse position stable
-            mouse_time = self.x_to_time(event.position().x())
-            self.scroll_offset += mouse_time * (self.zoom - old_zoom)
+            # Adjust scroll to keep mouse position stable:
+            # new_scroll = old_scroll + anchor_time * (new_zoom - old_zoom)
+            self.scroll_offset += anchor_time * (self.zoom - old_zoom)
+            self.scroll_offset = max(0, self.scroll_offset)
         else:
             # Scroll
             self.scroll_offset -= event.angleDelta().x() + event.angleDelta().y()
