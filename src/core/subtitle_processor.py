@@ -356,37 +356,85 @@ class SubtitleProcessor:
         """
         if not words:
             return target_pos, 0.0, 0
-        
-        # Build character-to-word mapping
-        char_idx = 0
-        word_boundaries = []
-        
-        for i, word in enumerate(words):
-            word_text = word.text if hasattr(word, 'text') else str(word)
-            word_text = word_text.strip()
-            
-            pos = text.find(word_text, char_idx)
-            if pos != -1:
-                word_boundaries.append((pos, pos + len(word_text), i, word))
-                char_idx = pos + len(word_text)
-        
-        if not word_boundaries:
-            return target_pos, 0.0, 0
-        
-        # Find word boundary closest to target
-        best_boundary = word_boundaries[0]
-        min_dist = abs(word_boundaries[0][1] - target_pos)
-        
-        for boundary in word_boundaries:
-            dist = abs(boundary[1] - target_pos)
-            if dist < min_dist:
-                min_dist = dist
-                best_boundary = boundary
-        
-        word = best_boundary[3]
+
+        # Robust mapping after user edits (spacing/punctuation changes):
+        # We choose the *token boundary before the cursor* and then fuzzy-match that token
+        # to the most likely word in `words`, preferring the expected neighborhood.
+        token_matches = list(re.finditer(r"\S+", text))
+        if not token_matches:
+            first = words[0]
+            ts = first.end if hasattr(first, 'end') else 0.0
+            return target_pos, ts, 0
+
+        # Token BEFORE cursor (boundary at-or-before target_pos)
+        token_before_idx = 0
+        for i, m in enumerate(token_matches):
+            if m.end() <= target_pos:
+                token_before_idx = i
+            else:
+                break
+
+        token_before = token_matches[token_before_idx].group(0)
+
+        def _norm(s: str) -> str:
+            # Keep Korean/English/numbers; drop punctuation/spacing for fuzzy compare.
+            return ''.join(re.findall(r"[0-9A-Za-z가-힣]+", (s or '').lower()))
+
+        token_key = _norm(token_before)
+        if not token_key:
+            # If token is pure punctuation, just use proportional guess.
+            n_tokens = len(token_matches)
+            n_words = len(words)
+            guess = int(round(token_before_idx * (n_words - 1) / max(1, n_tokens - 1)))
+            guess = max(0, min(n_words - 1, guess))
+            w = words[guess]
+            ts = w.end if hasattr(w, 'end') else 0.0
+            return token_matches[token_before_idx].end(), ts, guess
+
+        try:
+            from rapidfuzz import fuzz
+        except Exception:
+            fuzz = None
+
+        n_tokens = len(token_matches)
+        n_words = len(words)
+        guess = int(round(token_before_idx * (n_words - 1) / max(1, n_tokens - 1)))
+        guess = max(0, min(n_words - 1, guess))
+
+        # First pass: local window around guess
+        window = 15
+        lo = max(0, guess - window)
+        hi = min(n_words - 1, guess + window)
+
+        best_idx = guess
+        best_score = -1
+
+        def score_word(i: int) -> int:
+            wt = words[i].text if hasattr(words[i], 'text') else str(words[i])
+            wk = _norm(wt)
+            if not wk:
+                return 0
+            if fuzz is None:
+                return 100 if wk == token_key else 0
+            return int(fuzz.ratio(token_key, wk))
+
+        for i in range(lo, hi + 1):
+            s = score_word(i)
+            if s > best_score or (s == best_score and abs(i - guess) < abs(best_idx - guess)):
+                best_score = s
+                best_idx = i
+
+        # Second pass: if score is weak, widen search (handles token-count changes aggressively)
+        if best_score < 55:
+            for i in range(n_words):
+                s = score_word(i)
+                if s > best_score or (s == best_score and abs(i - guess) < abs(best_idx - guess)):
+                    best_score = s
+                    best_idx = i
+
+        word = words[best_idx]
         timestamp = word.end if hasattr(word, 'end') else 0.0
-        
-        return best_boundary[1], timestamp, best_boundary[2]
+        return token_matches[token_before_idx].end(), timestamp, best_idx
     
     def merge_segments(
         self,
