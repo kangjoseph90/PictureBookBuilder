@@ -37,9 +37,18 @@ class SubtitleProcessor:
     KOREAN_PARTICLES = set('은는이가을를에서로와과도만요죠')
     KOREAN_ENDINGS = set(['고', '며', '니', '면', '지', '던', '든'])
     
+    # 한국어 의존명사/연결어미 확장 (New)
+    # 단어 뒤에서 끊어야 자연스러운 것들
+    KOREAN_DEPENDENT_NOUNS = {'때', '뒤', '후', '전', '곳', '수', '뿐', '채', '바', '중', '듯', '쪽', '등'}
+    KOREAN_CONNECTIVE_2CHAR = {'는데', '은데', '지만', '다가', '아서', '어서', '해서', '면서', '라도', '니까'}
+    KOREAN_CONNECTIVE_1CHAR = {'서', '나', '니', '매', '와', '아', '어', '해', '게', '지', '고'} # 서(해서/어서), 나(거나), 니(하니), 매(하매), 와(나와), 아/어(하여)
+
     # 영어 접속사/전치사 (3순위) - 공백 뒤 단어 체크
-    ENGLISH_CONJUNCTIONS = {'and', 'but', 'or', 'so', 'because', 'if', 'when', 'while', 'since', 'that', 'which', 'who'}
-    ENGLISH_PREPOSITIONS = {'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'about'}
+    ENGLISH_CONJUNCTIONS = {
+        'and', 'but', 'or', 'so', 'because', 'if', 'when', 'while', 'since', 'that', 'which', 'who',
+        'although', 'though', 'unless', 'until', 'once', 'as', 'where', 'whether'
+    }
+    ENGLISH_PREPOSITIONS = {'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'about', 'before', 'after'}
     
     def __init__(
         self,
@@ -102,11 +111,22 @@ class SubtitleProcessor:
                 # 한국어: 조사/어미 뒤
                 if prev_char in self.KOREAN_PARTICLES:
                     bonus += self.SCORE_KOREAN_PARTICLE
+                
+                # 의존명사 (1글자) 체크
+                if prev_char in self.KOREAN_DEPENDENT_NOUNS:
+                     bonus += self.SCORE_KOREAN_PARTICLE + 10 # 의존명사는 좀 더 강하게
+
+                # 연결 어미 체크 (1글자)
+                if prev_char in self.KOREAN_CONNECTIVE_1CHAR:
+                    bonus += self.SCORE_KOREAN_PARTICLE
+
                 # 연결 어미 체크 (2글자)
                 if space_idx >= 2:
                     two_char = text[space_idx-2:space_idx]
                     if two_char in self.KOREAN_ENDINGS:
                         bonus += self.SCORE_KOREAN_PARTICLE
+                    if two_char in self.KOREAN_CONNECTIVE_2CHAR:
+                        bonus += self.SCORE_KOREAN_PARTICLE + 10 # 확실한 연결어미는 가산점
             else:
                 # 영어: 접속사/전치사 앞
                 next_word = self._get_next_word(text, space_idx)
