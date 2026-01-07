@@ -96,24 +96,26 @@ class SubtitleProcessor:
             bonus += self.SCORE_CLAUSE_END
         
         # 3순위: 언어별 처리
-        elif lang == 'ko':
-            # 한국어: 조사/어미 뒤
-            if prev_char in self.KOREAN_PARTICLES:
-                bonus += self.SCORE_KOREAN_PARTICLE
-            # 연결 어미 체크 (2글자)
-            if space_idx >= 2:
-                two_char = text[space_idx-2:space_idx]
-                if two_char in self.KOREAN_ENDINGS:
+        # 3순위: 언어별 처리 (설정에서 켜져 있을 때만)
+        elif self.split_on_conjunctions:
+            if lang == 'ko':
+                # 한국어: 조사/어미 뒤
+                if prev_char in self.KOREAN_PARTICLES:
                     bonus += self.SCORE_KOREAN_PARTICLE
-        else:
-            # 영어: 접속사/전치사 앞
-            next_word = self._get_next_word(text, space_idx)
-            if next_word == 'of':
-                bonus += self.SCORE_ENGLISH_OF  # 'of'는 낮은 점수
-            elif next_word in self.ENGLISH_CONJUNCTIONS:
-                bonus += self.SCORE_ENGLISH_CONJ
-            elif next_word in self.ENGLISH_PREPOSITIONS:
-                bonus += self.SCORE_ENGLISH_CONJ
+                # 연결 어미 체크 (2글자)
+                if space_idx >= 2:
+                    two_char = text[space_idx-2:space_idx]
+                    if two_char in self.KOREAN_ENDINGS:
+                        bonus += self.SCORE_KOREAN_PARTICLE
+            else:
+                # 영어: 접속사/전치사 앞
+                next_word = self._get_next_word(text, space_idx)
+                if next_word == 'of':
+                    bonus += self.SCORE_ENGLISH_OF  # 'of'는 낮은 점수
+                elif next_word in self.ENGLISH_CONJUNCTIONS:
+                    bonus += self.SCORE_ENGLISH_CONJ
+                elif next_word in self.ENGLISH_PREPOSITIONS:
+                    bonus += self.SCORE_ENGLISH_CONJ
         
         return bonus
     
@@ -142,25 +144,20 @@ class SubtitleProcessor:
             if is_segment and space_idx > target_pos:
                 continue
             
-            # 기본 점수: 목표 지점과의 거리에 따른 페널티
-            distance = abs(space_idx - target_pos)
-            score = -distance  # 가까울수록 높은 점수
+            # 기본 점수: 목표 지점과의 거리에 따른 페널티 (제곱 페널티 적용하여 중앙 선호)
+            distance_ratio = abs(space_idx - target_pos) / max(1, target_pos)
+            score = -(distance_ratio ** 2) * 50
             
             # 언어적 가산점
             score += self._calculate_linguistic_bonus(text, space_idx, lang)
             
             # 균형 페널티 (줄바꿈 시): 한쪽이 너무 짧으면 페널티
             if not is_segment:
-                line1_len = space_idx
-                line2_len = len(text) - space_idx - 1
-                min_len = min(line1_len, line2_len)
-                max_len = max(line1_len, line2_len)
-                # 짧은 쪽이 긴 쪽의 30% 미만이면 큰 페널티
-                if max_len > 0 and min_len / max_len < 0.3:
-                    score -= 40
-                # 짧은 쪽이 긴 쪽의 50% 미만이면 작은 페널티
-                elif max_len > 0 and min_len / max_len < 0.5:
-                    score -= 20
+                total_len = len(text)
+                side_ratio = space_idx / total_len
+                # 0.5에서 멀어질수록 페널티 (제곱 적용)
+                balance_penalty = abs(side_ratio - 0.5) * 100
+                score -= balance_penalty
             
             # 고아 줄 페널티 (끝에서 2글자 이내)
             remaining = len(text) - space_idx - 1
@@ -177,34 +174,42 @@ class SubtitleProcessor:
         
         return best_idx
     
-    def format_lines(self, text: str) -> str:
+    def format_lines(self, text: str, max_lines: Optional[int] = None) -> str:
         """단계 2: 줄바꿈 처리 (Line Breaking)
         
-        텍스트의 중앙에 가까우면서 언어적으로 자연스러운 공백에서 줄바꿈
+        텍스트를 max_chars_per_line 이내가 되도록 여러 줄로 분할
         """
-        # Check if already has line breaks - if all lines are within limit, don't reformat
+        if max_lines is None:
+            max_lines = self.max_lines
+            
+        # 이미 줄바꿈이 있고 최대 줄 수에 도달했다면 더 이상 분할하지 않음
         if '\n' in text:
             lines = text.split('\n')
-            all_lines_ok = all(len(line.strip()) <= self.max_chars_per_line for line in lines)
-            if all_lines_ok:
-                return text  # Already properly formatted
+            if len(lines) >= max_lines:
+                return text
         
-        # Check if single line is within limit
-        if len(text) <= self.max_chars_per_line:
+        # 전체 길이가 한 줄 제한 이내거나, 더 이상 나눌 수 없으면(max_lines=1) 종료
+        if len(text) <= self.max_chars_per_line or max_lines <= 1:
             return text
         
-        # 목표: 중앙
-        target_pos = len(text) // 2
+        # 최적의 분할 지점 찾기 (추정 줄 수에 따라 target_pos 조정)
+        # 예: 3줄이 필요하다면 첫 분할은 1/3 지점 근처가 좋음
+        estimated_lines = min(max_lines, (len(text) // self.max_chars_per_line) + 1)
+        target_pos = len(text) // estimated_lines
         
         best_break = self._find_best_break(text, target_pos, is_segment=False)
         
         if best_break is None:
-            return text  # 공백 없음
+            # 공백이 없는데 너무 길면 강제 분할 고려 (여기서는 일단 유지)
+            return text
         
         line1 = text[:best_break].strip()
-        line2 = text[best_break + 1:].strip()
+        remaining = text[best_break + 1:].strip()
         
-        return f"{line1}\n{line2}"
+        # 재귀적으로 나머지 줄 처리
+        formatted_remaining = self.format_lines(remaining, max_lines - 1)
+        
+        return f"{line1}\n{formatted_remaining}"
     
     def split_segment(
         self,

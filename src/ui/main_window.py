@@ -1684,7 +1684,7 @@ class MainWindow(QMainWindow):
             )
             
             # 1. Check if needs splitting
-            if len(original_text) > SUBTITLE_MAX_CHARS_PER_SEGMENT and clip.words:
+            if len(original_text) > config.subtitle_max_chars_per_segment and clip.words:
                 if not audio_anchor:
                     # Audio-anchored split only: if we can't link audio, do not split.
                     formatted_text = processor.format_lines(original_text)
