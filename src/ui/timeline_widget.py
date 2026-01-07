@@ -93,7 +93,7 @@ class TimelineCanvas(QWidget):
         # Track heights
         self.track_height = 50  # Height for waveform
         self.track_padding = 5
-        self.header_height = 25
+        self.header_height = 30 # Increased for ruler ticks
         
         # Interaction state
         self.selected_clip: Optional[str] = None
@@ -382,31 +382,69 @@ class TimelineCanvas(QWidget):
         painter.end()
     
     def _draw_grid(self, painter: QPainter):
-        """Draw time grid lines and labels"""
+        """Draw time grid lines and labels with dynamic intervals (ruler)"""
         # Draw header background
         painter.fillRect(0, 0, self.width(), self.header_height, QColor("#2D2D2D"))
-        painter.setPen(QPen(QColor("#333333"), 1))
+        painter.setPen(QPen(QColor("#3E3E42"), 1))
         painter.drawLine(0, self.header_height, self.width(), self.header_height)
         
-        painter.setPen(QPen(self.grid_color))
-        painter.setFont(QFont("Arial", 8))
+        # Calculate optimal step based on zoom (pixels per second)
+        # We want labels to have at least ~80px of space
+        min_label_width = 80
+        possible_steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600]
+        
+        step = possible_steps[-1]
+        for s in possible_steps:
+            if s * self.zoom >= min_label_width:
+                step = s
+                break
+        
+        # Minor step for smaller ticks (ruler style)
+        if step >= 60: minor_step = 10
+        elif step >= 10: minor_step = 1
+        elif step >= 1: minor_step = 0.5
+        else: minor_step = step / 5
+            
+        painter.setFont(QFont("Segoe UI", 8))
         
         # Calculate visible time range
-        start_time = max(0, self.x_to_time(0))
+        start_time = self.x_to_time(0)
         end_time = self.x_to_time(self.width())
         
-        # Draw second markers
-        for t in range(int(start_time), int(end_time) + 1):
+        # Start at the first multiple of minor_step
+        t = (max(0.0, start_time) // minor_step) * minor_step
+        
+        while t <= end_time:
             x = self.time_to_x(t)
-            painter.setPen(QPen(self.grid_color))
-            painter.drawLine(int(x), self.header_height, int(x), self.height())
             
-            # Time label
-            minutes = t // 60
-            seconds = t % 60
-            label = f"{minutes}:{seconds:02d}"
-            painter.setPen(QPen(self.text_color))
-            painter.drawText(int(x) + 3, 15, label)
+            # Use epsilon for float modulo/division checks
+            is_major = abs(t / step - round(t / step)) < 0.0001
+            
+            if is_major:
+                # Major tick (longer)
+                painter.setPen(QPen(QColor("#888888"), 1))
+                painter.drawLine(int(x), self.header_height - 15, int(x), self.header_height)
+                
+                # Grid line (full height)
+                painter.setPen(QPen(self.grid_color))
+                painter.drawLine(int(x), self.header_height, int(x), self.height())
+                
+                # Time label
+                minutes = int(t // 60)
+                seconds = t % 60
+                if step < 1:
+                    label = f"{minutes}:{seconds:04.1f}"
+                else:
+                    label = f"{minutes}:{int(seconds):02d}"
+                
+                painter.setPen(QPen(self.text_color))
+                painter.drawText(int(x) + 4, 15, label)
+            else:
+                # Minor tick (shorter)
+                painter.setPen(QPen(QColor("#555555"), 1))
+                painter.drawLine(int(x), self.header_height - 8, int(x), self.header_height)
+            
+            t += minor_step
     
     def _draw_playhead(self, painter: QPainter):
         """Draw the playhead (current time indicator)"""
@@ -957,7 +995,7 @@ class TimelineWidget(QWidget):
         self.track_labels = QWidget()
         self.track_labels.setStyleSheet("background-color: #252525;")
         track_labels_layout = QVBoxLayout(self.track_labels)
-        track_labels_layout.setContentsMargins(0, 25, 0, 0) # Top margin matches header height
+        track_labels_layout.setContentsMargins(0, 30, 0, 0) # Top margin matches header height (30px)
         track_labels_layout.setSpacing(5) # Spacing matches track padding
         
         # Helper to create centered label with fixed height
