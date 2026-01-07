@@ -7,7 +7,7 @@ import torch
 
 # Whisper settings
 WHISPER_MODEL = "medium" #"large-v3"
-USE_STABLE_TS = True  # True: stable-ts (정확한 타이밍), False: faster-whisper (빠른 속도)
+USE_STABLE_TS = False  # True: stable-ts (정확한 타이밍), False: faster-whisper (빠른 속도)
 
 if torch.cuda.is_available():
     WHISPER_DEVICE = "cuda"
@@ -20,9 +20,7 @@ else:
 
 # Audio settings
 DEFAULT_GAP_SECONDS = 0.5  # Gap between clips
-VAD_PADDING_MS = 100  # Padding for VAD trimming (increased for better margins)
-CLIP_PADDING_START_MS = 50  # Extra padding before each clip starts
-CLIP_PADDING_END_MS = 150  # Extra padding after each clip ends (captures trailing sounds)
+VAD_PADDING_MS = 150  # Padding for VAD trimming (increased for better margins)
 
 # Subtitle settings
 SUBTITLE_MAX_CHARS_PER_SEGMENT = 40  # Split segments longer than this

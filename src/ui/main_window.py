@@ -76,12 +76,12 @@ class ProcessingThread(QThread):
                         language="ko",
                         initial_prompt=initial_prompt
                     )
-            
+            print(transcriptions)
             # Step 4: Align dialogues
             self.progress.emit(50, "대사 정렬 중...")
             aligner = Aligner()
             aligned = aligner.align_all(dialogues, transcriptions)
-            
+
             # Step 5: VAD Refinement - refine segment boundaries with Silero VAD
             self.progress.emit(60, "VAD로 경계 보정 중...")
             vad = VADProcessor()
@@ -128,7 +128,7 @@ class ProcessingThread(QThread):
                         # If VAD fails, keep original boundaries
                         print(f"VAD refinement failed for segment {i}: {e}")
                         prev_end_by_speaker[speaker] = segment.end_time
-            
+            print(aligned)
             # Step 6: Build result
             self.progress.emit(90, "결과 생성 중...")
             result = {
@@ -767,14 +767,13 @@ class MainWindow(QMainWindow):
             # Extract waveform data
             waveform = []
             speaker = segment.dialogue.speaker
-            actual_duration = duration  # Will be updated to include padding
+            actual_duration = duration
             
             if speaker in speaker_audio:
                 audio = speaker_audio[speaker]
-                from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
                 
-                start_ms = max(0, int(segment.start_time * 1000) - CLIP_PADDING_START_MS)
-                end_ms = min(len(audio), int(segment.end_time * 1000) + CLIP_PADDING_END_MS)
+                start_ms = max(0, int(segment.start_time * 1000))
+                end_ms = min(len(audio), int(segment.end_time * 1000))
                 clip_audio = audio[start_ms:end_ms]
                 
                 # Use actual extracted clip duration for timeline sync
@@ -783,6 +782,7 @@ class MainWindow(QMainWindow):
                 waveform = self._extract_waveform_from_audio(clip_audio)
             
             # 1. Audio clip (Track 0)
+
             audio_clip = TimelineClip(
                 id=f"audio_{i}",
                 name="", # Remove text from audio clip for cleaner look
@@ -792,8 +792,7 @@ class MainWindow(QMainWindow):
                 color=self.timeline_widget.canvas.get_color_for_speaker(segment.dialogue.speaker),
                 clip_type="audio",
                 waveform=waveform,
-                source_start=segment.start_time,
-                source_end=segment.end_time,
+                offset=segment.start_time,  # Store segment start time
                 segment_index=i,
                 speaker=segment.dialogue.speaker
             )
@@ -809,7 +808,9 @@ class MainWindow(QMainWindow):
                 color=QColor(self.timeline_widget.canvas.get_color_for_speaker(segment.dialogue.speaker)).lighter(150),
                 clip_type="subtitle", # New type
                 waveform=[],
+                offset=segment.start_time,  # Store VAD-adjusted start time
                 segment_index=i,
+                speaker=segment.dialogue.speaker,
                 words=segment.words or []  # Pass word timestamps for editing
             )
             clips.append(sub_clip)
@@ -927,11 +928,9 @@ class MainWindow(QMainWindow):
                 speaker = segment.dialogue.speaker
                 if speaker in speaker_audio:
                     audio = speaker_audio[speaker]
-                    # Extract the specific segment with padding for better timing
-                    from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
                     
-                    start_ms = max(0, int(segment.start_time * 1000) - CLIP_PADDING_START_MS)
-                    end_ms = min(len(audio), int(segment.end_time * 1000) + CLIP_PADDING_END_MS)
+                    start_ms = max(0, int(segment.start_time * 1000))
+                    end_ms = min(len(audio), int(segment.end_time * 1000))
                     clip = audio[start_ms:end_ms]
                     
                     result_audio += clip
@@ -1012,10 +1011,8 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
 
-        # Update waveform only (fast path)
+        # Update waveform only (fast path) using offset + duration
         try:
-            from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
-            
             # Check cache for speaker audio
             speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
             if clip.speaker not in self.speaker_audio_cache:
@@ -1026,9 +1023,11 @@ class MainWindow(QMainWindow):
             
             audio = self.speaker_audio_cache.get(clip.speaker)
             if audio:
-                # Extract new audio segment
-                start_ms = max(0, int(clip.source_start * 1000) - CLIP_PADDING_START_MS)
-                end_ms = min(len(audio), int(clip.source_end * 1000) + CLIP_PADDING_END_MS)
+                # Extract audio using offset and duration
+                segment_end = clip.offset + clip.duration
+                
+                start_ms = max(0, int(clip.offset * 1000))
+                end_ms = min(len(audio), int(segment_end * 1000))
                 
                 # Simple cache for waveform itself during drag to prevent flickering
                 cache_key = f"{clip_id}_{start_ms}_{end_ms}"
@@ -1055,14 +1054,15 @@ class MainWindow(QMainWindow):
         if not clip:
             return
         
-        # Audio-specific source boundary update
+        # Audio-specific: Update aligned segment data using offset + duration
         if clip.clip_type == "audio" and clip.segment_index >= 0 and self.result_data:
             aligned = self.result_data.get('aligned', [])
             if clip.segment_index < len(aligned):
                 segment = aligned[clip.segment_index]
-                segment.start_time = clip.source_start
-                segment.end_time = clip.source_end
-                self.statusBar().showMessage(f"오디오 클립 수정됨: {clip.source_start:.2f}s ~ {clip.source_end:.2f}s")
+                # Update segment times based on clip's offset and duration
+                segment.start_time = clip.offset
+                segment.end_time = clip.offset + clip.duration
+                self.statusBar().showMessage(f"오디오 클립 수정됨: {clip.offset:.2f}s ~ {clip.source_end:.2f}s")
         else:
             self.statusBar().showMessage(f"클립 수정됨: {clip.name}")
         
@@ -1245,26 +1245,13 @@ class MainWindow(QMainWindow):
         split_pos, source_split_time, word_idx = processor.find_best_split_point(
             clip.name, clip.words, char_pos
         )
-        
+
         # Convert source audio time to timeline position
-        # source_split_time is in source audio coordinates (word.end)
-        # Now we use NEXT word's START time for more accurate split
+        # Use first segment의 종료 시각(= split word end) as the boundary, not second segment start
         if clip.words:
-            first_word = clip.words[0]
-            first_word_time = first_word.start if hasattr(first_word, 'start') else 0.0
-            
-            # words2 will start from word_idx + 1
             words2 = clip.words[word_idx + 1:] if word_idx + 1 < len(clip.words) else []
-            
-            if words2:
-                # Use second segment's first word start time
-                second_first_word = words2[0]
-                second_first_word_time = second_first_word.start if hasattr(second_first_word, 'start') else 0.0
-                split_time = clip.start + (second_first_word_time - first_word_time)
-            else:
-                # No second segment words, use original split time
-                relative_time = source_split_time - first_word_time
-                split_time = clip.start + relative_time
+            relative_time = source_split_time - clip.offset
+            split_time = clip.start + relative_time
         else:
             # Fallback: estimate based on character position ratio
             ratio = char_pos / len(clip.name)
@@ -1309,7 +1296,9 @@ class MainWindow(QMainWindow):
             color=clip.color,
             clip_type="subtitle",
             waveform=[],
+            offset=clip.offset,  # Preserve original offset
             segment_index=-1,
+            speaker=clip.speaker,  # Preserve speaker info
             words=words2
         )
         
@@ -1324,17 +1313,22 @@ class MainWindow(QMainWindow):
         from core.subtitle_processor import SubtitleProcessor
         
         processor = SubtitleProcessor()
+        # Use source audio coordinates for merge_segments
+        # (though it doesn't do coordinate transformation, using offset maintains consistency)
         merged = processor.merge_segments(
-            {'text': clip1.name, 'start_time': clip1.start, 
-             'end_time': clip1.start + clip1.duration, 'words': clip1.words},
-            {'text': clip2.name, 'start_time': clip2.start,
-             'end_time': clip2.start + clip2.duration, 'words': clip2.words}
+            {'text': clip1.name, 'start_time': clip1.offset, 
+             'end_time': clip1.offset + clip1.duration, 'words': clip1.words},
+            {'text': clip2.name, 'start_time': clip2.offset,
+             'end_time': clip2.offset + clip2.duration, 'words': clip2.words}
         )
         
-        # Update first clip
+        # Update first clip - keep timeline start, update duration, preserve offset
         clip1.name = merged['text']
-        clip1.duration = merged['end_time'] - merged['start_time']
+        # Calculate new timeline duration: from clip1.start to clip2's end
+        new_timeline_end = clip2.start + clip2.duration
+        clip1.duration = new_timeline_end - clip1.start
         clip1.words = merged['words']
+        # clip1.offset stays the same (it's the original start time)
         
         # Remove second clip
         self.timeline_widget.canvas.clips.remove(clip2)
@@ -1375,11 +1369,11 @@ class MainWindow(QMainWindow):
             
             # 1. Check if needs splitting
             if len(original_text) > SUBTITLE_MAX_CHARS_PER_SEGMENT and clip.words:
-                # Split the segment
+                # Split the segment - use source audio coordinates (offset), not timeline coordinates
                 segments = processor.split_segment(
                     original_text,
-                    clip.start,
-                    clip.start + clip.duration,
+                    clip.offset,  # Source audio start time (VAD-adjusted)
+                    clip.offset + clip.duration,  # Source audio end time
                     clip.words
                 )
                 
@@ -1387,16 +1381,28 @@ class MainWindow(QMainWindow):
                     # Apply line formatting to each segment
                     formatted_text = processor.format_lines(seg['text'])
                     
+                    # Convert source audio coordinates to timeline coordinates
+                    # seg['start_time'] and seg['end_time'] are in source audio coordinates
+                    # We need to convert them to timeline coordinates
+                    timeline_start = clip.start + (seg['start_time'] - clip.offset)
+                    timeline_duration = seg['end_time'] - seg['start_time']
+                    
+                    # For the first segment, keep the original offset
+                    # For subsequent segments, use their own start time as offset
+                    segment_offset = seg['start_time']
+                    
                     new_clip = TimelineClip(
                         id=f"{clip.id}_fmt_{i}" if i > 0 else clip.id,
                         name=formatted_text,
-                        start=seg['start_time'],
-                        duration=seg['end_time'] - seg['start_time'],
+                        start=timeline_start,
+                        duration=timeline_duration,
                         track=clip.track,
                         color=clip.color,
                         clip_type="subtitle",
                         waveform=[],
+                        offset=segment_offset,  # Use segment's own offset
                         segment_index=clip.segment_index if i == 0 else -1,
+                        speaker=clip.speaker,  # Preserve speaker info
                         words=seg['words']
                     )
                     new_clips.append(new_clip)
@@ -1598,7 +1604,6 @@ class MainWindow(QMainWindow):
         try:
             from pydub import AudioSegment
             import tempfile
-            from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
             
             # Use self.speaker_audio_map directly (works for both fresh and loaded projects)
             speaker_audio_map = self.speaker_audio_map or {}
@@ -1627,9 +1632,11 @@ class MainWindow(QMainWindow):
                 
                 audio = speaker_audio[clip.speaker]
                 
-                # Extract using source boundaries with padding
-                start_ms = max(0, int(clip.source_start * 1000) - CLIP_PADDING_START_MS)
-                end_ms = min(len(audio), int(clip.source_end * 1000) + CLIP_PADDING_END_MS)
+                # Extract using offset and duration
+                segment_end = clip.offset + clip.duration
+                
+                start_ms = max(0, int(clip.offset * 1000))
+                end_ms = min(len(audio), int(segment_end * 1000))
                 clip_audio = audio[start_ms:end_ms]
                 
                 # Add silence gap if needed
@@ -1801,11 +1808,14 @@ class MainWindow(QMainWindow):
                     gap_duration = int((clip.start - current_pos) * 1000)
                     if gap_duration > 0:
                         result_audio += AudioSegment.silent(duration=gap_duration)
+        
+                    # Calculate original segment duration
+                    padded_duration_ms = int(clip.duration * 1000)
+                    segment_duration_ms = padded_duration_ms
+                    segment_end = clip.offset + (segment_duration_ms / 1000.0)
                     
-                    # Extract the specific segment with padding
-                    from config import CLIP_PADDING_START_MS, CLIP_PADDING_END_MS
-                    start_ms = max(0, int(clip.source_start * 1000) - CLIP_PADDING_START_MS)
-                    end_ms = min(len(audio), int(clip.source_end * 1000) + CLIP_PADDING_END_MS)
+                    start_ms = max(0, int(clip.offset * 1000))
+                    end_ms = min(len(audio), int(segment_end * 1000))
                     audio_clip = audio[start_ms:end_ms]
                     
                     result_audio += audio_clip
@@ -2016,8 +2026,7 @@ class MainWindow(QMainWindow):
                 'track': clip.track,
                 'color': clip.color.name(),
                 'clip_type': clip.clip_type,
-                'source_start': clip.source_start,
-                'source_end': clip.source_end,
+                'offset': clip.offset,  # Simplified: single offset field
                 'segment_index': clip.segment_index,
                 'speaker': clip.speaker,  # Save speaker for audio clips
             }
@@ -2114,8 +2123,7 @@ class MainWindow(QMainWindow):
                 color=QColor(clip_data['color']),
                 clip_type=clip_data['clip_type'],
                 waveform=[],  # Will regenerate if needed
-                source_start=clip_data.get('source_start', 0.0),
-                source_end=clip_data.get('source_end', 0.0),
+                offset=clip_data.get('offset', 0.0),
                 segment_index=clip_data.get('segment_index', -1),
                 image_path=image_path,
                 speaker=clip_data.get('speaker', ''),  # Restore speaker
@@ -2244,10 +2252,14 @@ class MainWindow(QMainWindow):
                 
                 if speaker and speaker in self.speaker_audio_cache:
                     audio = self.speaker_audio_cache[speaker]
+
+                    # Calculate original segment duration
+                    padded_duration_ms = int(clip.duration * 1000)
+                    segment_duration_ms = padded_duration_ms
+                    segment_end = clip.offset + (segment_duration_ms / 1000.0)
                     
-                    # Extract the segment
-                    start_ms = int(clip.source_start * 1000)
-                    end_ms = int(clip.source_end * 1000)
+                    start_ms = max(0, int(clip.offset * 1000))
+                    end_ms = min(len(audio), int(segment_end * 1000))
                     segment = audio[start_ms:end_ms]
                     
                     # Generate waveform

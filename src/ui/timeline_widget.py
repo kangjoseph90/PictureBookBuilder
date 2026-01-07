@@ -18,7 +18,20 @@ from PyQt6.QtGui import (
 
 @dataclass
 class TimelineClip:
-    """A clip on the timeline"""
+    """A clip on the timeline
+    
+    Time coordinate system:
+    - start: Timeline position (when this clip plays in the final output)
+    - duration: Length of the clip on timeline (seconds)
+    - offset: Original audio offset (where to start reading from source audio)
+    
+    Audio extraction formula:
+        audio_segment = source_audio[offset : offset + duration]
+    
+    The offset represents the exact position in the original audio file,
+    without any padding applied. Padding is only used during initial
+    alignment and audio extraction, not stored in the clip.
+    """
     id: str
     name: str
     start: float  # Timeline position (when it plays)
@@ -30,15 +43,20 @@ class TimelineClip:
     image_path: Optional[str] = None  # Path to image file for thumbnails
     
     # Source audio info (for trimming/editing)
-    source_start: float = 0.0  # Start time in original audio
-    source_end: float = 0.0    # End time in original audio
+    offset: float = 0.0        # Offset in original audio (seconds)
     segment_index: int = -1    # Index in result_data['aligned']
     speaker: str = ""          # Speaker name for audio lookup
     words: list = field(default_factory=list)  # Word timestamps for subtitle editing
     
     @property
     def end(self) -> float:
+        """Timeline end position"""
         return self.start + self.duration
+    
+    @property
+    def source_end(self) -> float:
+        """End position in original audio (offset + duration)"""
+        return self.offset + self.duration
 
 
 class TimelineCanvas(QWidget):
@@ -89,8 +107,7 @@ class TimelineCanvas(QWidget):
         self.resizing_clip: Optional[str] = None
         self.resize_edge: str = ""  # "left" or "right"
         self.resize_start_x: float = 0
-        self.resize_original_source_start: float = 0
-        self.resize_original_source_end: float = 0
+        self.resize_original_offset: float = 0    # Original offset in source audio
         self.resize_original_duration: float = 0
         self.resize_original_start: float = 0
         
@@ -150,7 +167,7 @@ class TimelineCanvas(QWidget):
             self.total_duration = 60.0  # Default 1 minute if no clips
     
     def update_clip_waveform(self, clip_id: str):
-        """Update waveform for a clip based on current source boundaries
+        """Update waveform for a clip based on current offset and duration
         
         Args:
             clip_id: ID of the clip to update
@@ -165,9 +182,13 @@ class TimelineCanvas(QWidget):
                     if speaker and speaker in self.speaker_audio_cache:
                         try:
                             audio = self.speaker_audio_cache[speaker]
-                            # Extract the segment based on current source boundaries
-                            start_ms = int(clip.source_start * 1000)
-                            end_ms = int(clip.source_end * 1000)
+                            # Calculate original segment duration
+                            padded_duration_ms = int(clip.duration * 1000)
+                            segment_duration_ms = padded_duration_ms
+                            segment_end = clip.offset + (segment_duration_ms / 1000.0)
+                            
+                            start_ms = max(0, int(clip.offset * 1000))
+                            end_ms = min(len(audio), int(segment_end * 1000))
                             segment = audio[start_ms:end_ms]
                             
                             # Generate and update waveform
@@ -534,8 +555,7 @@ class TimelineCanvas(QWidget):
             self.resizing_clip = edge_clip.id
             self.resize_edge = edge
             self.resize_start_x = x
-            self.resize_original_source_start = edge_clip.source_start
-            self.resize_original_source_end = edge_clip.source_end
+            self.resize_original_offset = edge_clip.offset
             self.resize_original_duration = edge_clip.duration
             self.resize_original_start = edge_clip.start
             self.selected_clip = edge_clip.id
@@ -614,105 +634,110 @@ class TimelineCanvas(QWidget):
             self.update()
             return
         
-        # Handle edge resizing
+        # Handle edge resizing - simplified offset-based logic
         if self.resizing_clip:
             dx = x - self.resize_start_x
             dt = dx / self.zoom
             
+            # Track snap state for visual indicator
+            snapped_start = None
+            snapped_end = None
+            
             for clip in self.clips:
                 if clip.id == self.resizing_clip:
-                    if self.resize_edge == "left":
-                        # Trim start - adjust source_start and duration
-                        new_source_start = self.resize_original_source_start + dt
-                        
-                    if clip.clip_type == "audio":
-                        # Audio-specific logic: Trim source and update duration/start
-                        new_source_start = self.resize_original_source_start + dt
-                        
+                    if clip.clip_type in ("audio", "subtitle"):
+                        # Audio and subtitle clips: adjust offset and duration together
                         if self.resize_edge == "left":
-                            # Trim start
-                            target_start = self.resize_original_start - (self.resize_original_source_start - new_source_start)
-                            snapped_start = self.get_snap_time(target_start, exclude_clip_id=clip.id)
-                            
-                            if snapped_start != target_start:
-                                dt -= (target_start - snapped_start)
-                                new_source_start = self.resize_original_source_start + dt
-                                
-                            new_source_start = max(0, min(new_source_start, clip.source_end - 0.1))
-                            duration_change = self.resize_original_source_start - new_source_start
-                            new_duration = self.resize_original_duration + duration_change
-                            
-                            if new_duration > 0.1:
-                                clip.source_start = new_source_start
-                                clip.duration = new_duration
-                                clip.start = self.resize_original_start - duration_change
-                        
-                        elif self.resize_edge == "right":
-                            # Trim end
-                            new_source_end = self.resize_original_source_end + dt
-                            target_end = self.resize_original_start + self.resize_original_duration + dt
-                            snapped_end = self.get_snap_time(target_end, exclude_clip_id=clip.id)
-                            
-                            if snapped_end != target_end:
-                                dt -= (target_end - snapped_end)
-                                new_source_end = self.resize_original_source_end + dt
-                                
-                            new_source_end = max(clip.source_start + 0.1, new_source_end)
-                            duration_change = new_source_end - self.resize_original_source_end
-                            new_duration = self.resize_original_duration + duration_change
-                            
-                            if new_duration > 0.1:
-                                clip.source_end = new_source_end
-                                clip.duration = new_duration
-                    else:
-                        # Non-audio logic: Just change timeline duration/start
-                        if self.resize_edge == "left":
-                            target_start = self.resize_original_start + dt
-                            snapped_start = self.get_snap_time(target_start, exclude_clip_id=clip.id)
-                            if snapped_start != target_start:
-                                dt = snapped_start - self.resize_original_start
-                                
+                            # Left edge: change offset and start, adjust duration
+                            new_offset = self.resize_original_offset + dt
                             new_start = self.resize_original_start + dt
                             new_duration = self.resize_original_duration - dt
+                            
+                            # Apply snapping to timeline start
+                            snapped_start = self.get_snap_time(new_start, exclude_clip_id=clip.id)
+                            if snapped_start != new_start:
+                                snap_dt = snapped_start - self.resize_original_start
+                                new_offset = self.resize_original_offset + snap_dt
+                                new_start = snapped_start
+                                new_duration = self.resize_original_duration - snap_dt
+                            
+                            # Ensure valid bounds
+                            new_offset = max(0, new_offset)
+                            if new_duration > 0.1:
+                                clip.offset = new_offset
+                                clip.start = new_start
+                                clip.duration = new_duration
+                        
+                        elif self.resize_edge == "right":
+                            # Right edge: change duration only (offset stays same)
+                            new_duration = self.resize_original_duration + dt
+                            target_end = self.resize_original_start + new_duration
+                            
+                            # Apply snapping to timeline end
+                            snapped_end = self.get_snap_time(target_end, exclude_clip_id=clip.id)
+                            if snapped_end != target_end:
+                                new_duration = snapped_end - self.resize_original_start
+                            
+                            if new_duration > 0.1:
+                                clip.duration = new_duration
+                    else:
+                        # Non-audio clips: just change timeline position/duration
+                        if self.resize_edge == "left":
+                            new_start = self.resize_original_start + dt
+                            new_duration = self.resize_original_duration - dt
+                            
+                            snapped_start = self.get_snap_time(new_start, exclude_clip_id=clip.id)
+                            if snapped_start != new_start:
+                                snap_dt = snapped_start - self.resize_original_start
+                                new_start = snapped_start
+                                new_duration = self.resize_original_duration - snap_dt
                             
                             if new_duration > 0.1:
                                 clip.start = new_start
                                 clip.duration = new_duration
                                 
                         elif self.resize_edge == "right":
-                            target_end = self.resize_original_start + self.resize_original_duration + dt
+                            new_duration = self.resize_original_duration + dt
+                            target_end = self.resize_original_start + new_duration
+                            
                             snapped_end = self.get_snap_time(target_end, exclude_clip_id=clip.id)
                             if snapped_end != target_end:
-                                dt = snapped_end - (self.resize_original_start + self.resize_original_duration)
-                                
-                            new_duration = self.resize_original_duration + dt
+                                new_duration = snapped_end - self.resize_original_start
+                            
                             if new_duration > 0.1:
                                 clip.duration = new_duration
+                    
+                    # Update snap indicator based on what was snapped
+                    self.active_snap_time = None
+                    if self.resize_edge == "left" and snapped_start is not None:
+                        new_start = clip.start
+                        original_new_start = self.resize_original_start + dt
+                        if abs(new_start - original_new_start) > 0.001:
+                            self.active_snap_time = new_start
+                    elif self.resize_edge == "right" and snapped_end is not None:
+                        new_end = clip.start + clip.duration
+                        original_new_end = self.resize_original_start + self.resize_original_duration + dt
+                        if abs(new_end - original_new_end) > 0.001:
+                            self.active_snap_time = new_end
+                    
                     break
             
             # Update linked clip if Ctrl+drag mode
             if self.linked_clip is not None:
+                actual_dt = clip.start - self.resize_original_start if self.resize_edge == "left" else \
+                           (clip.duration - self.resize_original_duration)
                 if self.resize_edge == "left":
                     # Our left edge moved, linked clip's right edge should follow
-                    # dt > 0 means we moved right, linked clip should expand
-                    new_linked_duration = self.linked_original_duration + dt
+                    new_linked_duration = self.linked_original_duration + actual_dt
                     if new_linked_duration > 0.1:
                         self.linked_clip.duration = new_linked_duration
                 elif self.resize_edge == "right":
                     # Our right edge moved, linked clip's left edge should follow
-                    # dt > 0 means we moved right, linked clip should shrink and shift
-                    new_linked_start = self.linked_original_start + dt
-                    new_linked_duration = self.linked_original_duration - dt
+                    new_linked_start = self.linked_original_start + actual_dt
+                    new_linked_duration = self.linked_original_duration - actual_dt
                     if new_linked_duration > 0.1:
                         self.linked_clip.start = new_linked_start
                         self.linked_clip.duration = new_linked_duration
-            
-            # Update snap indicator for resizing
-            self.active_snap_time = None
-            if self.resize_edge == "left" and snapped_start != target_start:
-                self.active_snap_time = snapped_start
-            elif self.resize_edge == "right" and snapped_end != target_end:
-                self.active_snap_time = snapped_end
             
             # Update waveform in real-time during resizing
             self.update_clip_waveform(self.resizing_clip)

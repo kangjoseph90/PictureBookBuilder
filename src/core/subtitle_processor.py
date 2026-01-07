@@ -236,37 +236,39 @@ class SubtitleProcessor:
         
         # 목표: MAX_SEGMENT에 가깝게 (꽉 채우기)
         target_pos = self.max_chars_per_segment
-        
+
         best_break = self._find_best_break(text, target_pos, is_segment=True)
-        
+
         if best_break is None:
             # 공백 없음 - 강제 분할
             best_break = self.max_chars_per_segment
-        
+
         # 텍스트 분할
         text1 = text[:best_break].strip()
         text2 = text[best_break:].strip()
-        
+
         # 단어 분할 및 타임스탬프 계산
         word_idx = self._find_word_index_at_position(text, words, best_break)
         words1 = words[:word_idx + 1] if words else []
         words2 = words[word_idx + 1:] if words else []
-        
+
+        # Whisper 단어 타임스탬프와 VAD 조정된 시작 시간이 다를 수 있음
+        # (예: start_time=0.332, first_word.start=0.0). 이 경우 단어 시간은 절대
+        # 좌표, start_time은 VAD 기준 좌표이므로 단어 시간을 그대로 사용해야 한다.
+        first_word_time = words[0].start if (words and hasattr(words[0], 'start')) else 0.0
+        word_times_relative = abs(first_word_time - start_time) < 0.05  # ~50ms 이내면 동일 좌표계로 간주
+
         # 타임라인 위치 계산 (첫 세그먼트 끝 = 마지막 단어 끝 시간 기준)
         timeline_split_time = self._calculate_split_time(
-            text, best_break, start_time, end_time, words
+            text, best_break, start_time, end_time, words, word_times_relative
         )
-        
-        # 두 번째 세그먼트 시작 시간 계산 (자신의 첫 단어 시작 시간 기준)
-        # 중요: words2의 첫 단어 시작 시간을 사용해야 함 (gap이 있을 수 있음)
-        if words2:
-            first_word = words[0] if words else None
-            first_word_time = first_word.start if first_word and hasattr(first_word, 'start') else 0.0
-            second_first_word = words2[0]
-            second_first_word_time = second_first_word.start if hasattr(second_first_word, 'start') else 0.0
-            second_segment_start = start_time + (second_first_word_time - first_word_time)
-        else:
-            second_segment_start = timeline_split_time
+
+        # 두 번째 세그먼트 시작 시간 = 첫 세그먼트 종료 시간(분할 시점)
+        second_segment_start = timeline_split_time
+
+        # 분할 지점이 입력 구간을 벗어나지 않도록 클램프
+        timeline_split_time = min(max(timeline_split_time, start_time), end_time)
+        second_segment_start = min(max(second_segment_start, start_time), end_time)
         
         # 첫 세그먼트 끝 = 두 번째 세그먼트 시작 (gap 없이 연결)
         result1 = {
@@ -306,7 +308,8 @@ class SubtitleProcessor:
         char_pos: int,
         start_time: float,
         end_time: float,
-        words: list
+        words: list,
+        word_times_relative: bool = True
     ) -> float:
         """Calculate timeline split time from character position
         
@@ -327,10 +330,14 @@ class SubtitleProcessor:
         if word_idx < len(words):
             split_word = words[word_idx]
             source_split_time = split_word.end if hasattr(split_word, 'end') else first_word_time
-            
-            # Absolute time difference method (matches manual split)
-            relative_time = source_split_time - first_word_time
-            return start_time + relative_time
+
+            if word_times_relative:
+                # 단어 시간이 세그먼트 시작 기준(상대)일 때는 기존 방식 유지
+                relative_time = source_split_time - first_word_time
+                return start_time + relative_time
+
+            # 단어 시간이 오디오 전체 기준(절대)일 때는 그대로 사용
+            return source_split_time
         
         # Fallback: ratio based
         ratio = char_pos / len(text) if len(text) > 0 else 0.5
