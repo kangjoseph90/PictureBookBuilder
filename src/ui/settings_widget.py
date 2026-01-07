@@ -29,22 +29,49 @@ class SettingsWidget(QWidget):
         self._config = get_config()
         self._setup_ui()
         self._load_from_config()
+        self._install_immediate_tooltips()
+    
+    def _install_immediate_tooltips(self):
+        """Install event filter for immediate tooltips on group boxes."""
+        self.processing_group.installEventFilter(self)
+        self.subtitle_group.installEventFilter(self)
+            
+    def eventFilter(self, obj, event):
+        """Show tooltips immediately only when hovering the header of group boxes."""
+        from PyQt6.QtWidgets import QToolTip, QGroupBox
+        from PyQt6.QtGui import QCursor
+        from PyQt6.QtCore import QEvent
+        
+        if event.type() == QEvent.Type.Enter or event.type() == QEvent.Type.MouseMove:
+            if isinstance(obj, QGroupBox):
+                # Only show if in the top area (header)
+                local_pos = obj.mapFromGlobal(QCursor.pos())
+                if local_pos.y() < 25:
+                    if obj == self.processing_group:
+                        QToolTip.showText(QCursor.pos(), "처음 '처리 시작' 버튼을 누를 때 적용됩니다", obj)
+                    elif obj == self.subtitle_group:
+                        QToolTip.showText(QCursor.pos(), "자막 자동 정리 시 적용됩니다", obj)
+                    return True
+                else:
+                    # Hide if moved out of header but still in box
+                    QToolTip.hideText()
+        
+        # Hide on leave
+        if event.type() == QEvent.Type.Leave:
+            QToolTip.hideText()
+            
+        return super().eventFilter(obj, event)
     
     def _setup_ui(self):
         """Setup the settings UI layout."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
         
         # === Processing Settings (Whisper + Audio) ===
-        processing_group = QGroupBox("🔧 처리 설정")
-        processing_group.setToolTip("처음 '처리 시작' 버튼을 누를 때 적용됩니다")
-        processing_layout = QVBoxLayout(processing_group)
-        
-        # Info label
-        processing_info = QLabel("▶️ 처리 시작 시 적용")
-        processing_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
-        processing_layout.addWidget(processing_info)
+        self.processing_group = QGroupBox("처리 설정")
+        # Tooltip handled in eventFilter
+        processing_layout = QVBoxLayout(self.processing_group)
         
         # Whisper section
         whisper_layout = QFormLayout()
@@ -53,7 +80,6 @@ class SettingsWidget(QWidget):
         # Model selection
         self.combo_model = QComboBox()
         self.combo_model.addItems(self.WHISPER_MODELS)
-        self.combo_model.setToolTip("모델 크기: tiny(빠름) → large(정확)")
         self.combo_model.currentTextChanged.connect(self._on_setting_changed)
         whisper_layout.addRow("Whisper 모델:", self.combo_model)
         
@@ -77,7 +103,6 @@ class SettingsWidget(QWidget):
         self.spin_vad_padding = QSpinBox()
         self.spin_vad_padding.setRange(0, 500)
         self.spin_vad_padding.setSuffix(" ms")
-        self.spin_vad_padding.setToolTip("음성 경계 패딩 (VAD 트리밍)")
         self.spin_vad_padding.valueChanged.connect(self._on_setting_changed)
         audio_layout.addRow("VAD 패딩:", self.spin_vad_padding)
         
@@ -86,22 +111,16 @@ class SettingsWidget(QWidget):
         self.spin_gap.setRange(0.0, 2.0)
         self.spin_gap.setSingleStep(0.1)
         self.spin_gap.setSuffix(" 초")
-        self.spin_gap.setToolTip("클립 간 기본 간격")
         self.spin_gap.valueChanged.connect(self._on_setting_changed)
         audio_layout.addRow("클립 간격:", self.spin_gap)
         
         processing_layout.addLayout(audio_layout)
-        layout.addWidget(processing_group)
+        layout.addWidget(self.processing_group)
         
         # === Subtitle Settings ===
-        subtitle_group = QGroupBox("📝 자막 설정")
-        subtitle_group.setToolTip("자막 자동 정리 시 적용됩니다")
-        subtitle_layout = QVBoxLayout(subtitle_group)
-        
-        # Info label
-        subtitle_info = QLabel("🔧 자막 자동 정리 시 적용")
-        subtitle_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
-        subtitle_layout.addWidget(subtitle_info)
+        self.subtitle_group = QGroupBox("자막 설정")
+        # Tooltip handled in eventFilter
+        subtitle_layout = QVBoxLayout(self.subtitle_group)
         
         form_layout = QFormLayout()
         form_layout.setSpacing(8)
@@ -109,21 +128,18 @@ class SettingsWidget(QWidget):
         # Max chars per segment
         self.spin_segment_chars = QSpinBox()
         self.spin_segment_chars.setRange(20, 100)
-        self.spin_segment_chars.setToolTip("세그먼트 최대 글자수 (초과 시 분할)")
         self.spin_segment_chars.valueChanged.connect(self._on_setting_changed)
         form_layout.addRow("세그먼트 최대:", self.spin_segment_chars)
         
         # Max chars per line
         self.spin_line_chars = QSpinBox()
         self.spin_line_chars.setRange(10, 50)
-        self.spin_line_chars.setToolTip("라인당 최대 글자수 (초과 시 줄바꿈)")
         self.spin_line_chars.valueChanged.connect(self._on_setting_changed)
         form_layout.addRow("라인 최대:", self.spin_line_chars)
         
         # Max lines
         self.spin_max_lines = QSpinBox()
         self.spin_max_lines.setRange(1, 4)
-        self.spin_max_lines.setToolTip("자막당 최대 줄 수")
         self.spin_max_lines.valueChanged.connect(self._on_setting_changed)
         form_layout.addRow("최대 줄 수:", self.spin_max_lines)
         
@@ -138,18 +154,9 @@ class SettingsWidget(QWidget):
         form_layout.addRow("", self.check_auto_split)
         
         subtitle_layout.addLayout(form_layout)
-        layout.addWidget(subtitle_group)
+        layout.addWidget(self.subtitle_group)
         
-        # === Reset Button ===
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        self.btn_reset = QPushButton("기본값 복원")
-        self.btn_reset.setToolTip("모든 설정을 기본값으로 초기화")
-        self.btn_reset.clicked.connect(self._reset_to_defaults)
-        btn_layout.addWidget(self.btn_reset)
-        
-        layout.addLayout(btn_layout)
+        layout.addStretch()
     
     def _load_from_config(self):
         """Load current config values into UI controls."""
@@ -208,7 +215,7 @@ class SettingsWidget(QWidget):
         self._config.subtitle_split_on_conjunctions = self.check_split_conj.isChecked()
         self._config.subtitle_auto_split = self.check_auto_split.isChecked()
     
-    def _reset_to_defaults(self):
+    def reset_to_defaults(self):
         """Reset all settings to defaults."""
         self._config.reset_to_defaults()
         self._load_from_config()
@@ -230,18 +237,26 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
         
         self.settings_widget = SettingsWidget()
         layout.addWidget(self.settings_widget)
         
-        # Close button
+        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(10, 0, 10, 10)
+        
+        reset_btn = QPushButton("기본값 복원")
+        reset_btn.setToolTip("모든 설정을 기본값으로 초기화")
+        reset_btn.clicked.connect(self.settings_widget.reset_to_defaults)
+        btn_layout.addWidget(reset_btn)
+        
         btn_layout.addStretch()
         
         close_btn = QPushButton("닫기")
         close_btn.clicked.connect(self.accept)
+        close_btn.setFixedWidth(80)
         btn_layout.addWidget(close_btn)
         
         layout.addLayout(btn_layout)

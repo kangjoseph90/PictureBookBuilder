@@ -55,16 +55,17 @@ class PreviewWidget(QWidget):
         # Subtitle overlay (on top of image)
         self.subtitle_label = QLabel(self.image_label)
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Word wrap disabled - only show line breaks that are explicitly in the text
-        self.subtitle_label.setWordWrap(False)
+        # Word wrap enabled to prevent off-screen text on small windows
+        self.subtitle_label.setWordWrap(True)
         self.subtitle_label.setStyleSheet("""
             QLabel {
                 color: white;
                 background-color: rgba(0, 0, 0, 160);
-                padding: 5px 15px;
+                padding: 8px 15px;
                 border-radius: 4px;
                 font-size: 16px;
                 font-weight: bold;
+                line-height: 1.4;
             }
         """)
         self.subtitle_label.hide()
@@ -88,13 +89,18 @@ class PreviewWidget(QWidget):
         
         # Playback controls
         controls_layout = QHBoxLayout()
+        controls_layout.addStretch()
         
-        self.btn_play = QPushButton("▶️ 재생")
+        self.btn_play = QPushButton()
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_play.setToolTip("재생/일시정지")
         self.btn_play.clicked.connect(self._toggle_play)
-        self.btn_play.setFixedWidth(80)
+        self.btn_play.setFixedWidth(40) # Smaller as it's icon only
         controls_layout.addWidget(self.btn_play)
         
-        self.btn_stop = QPushButton("⏹️")
+        self.btn_stop = QPushButton()
+        self.btn_stop.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.btn_stop.setToolTip("정지")
         self.btn_stop.clicked.connect(self._stop)
         self.btn_stop.setFixedWidth(40)
         controls_layout.addWidget(self.btn_stop)
@@ -146,7 +152,7 @@ class PreviewWidget(QWidget):
         
         # Only show prompt if we are not restoring a position
         if initial_pos_ms <= 0:
-            self.image_label.setText("▶️ 재생 버튼을 누르세요")
+            self.image_label.setText("재생 버튼을 누르세요")
             
     def set_images(self, image_paths: list[str], timestamps: list[float]):
         """Set images with specific start timestamps
@@ -297,16 +303,21 @@ class PreviewWidget(QWidget):
         if not self.subtitle_label.isVisible():
             return
             
-        self.subtitle_label.adjustSize()
         img_w = self.image_label.width()
         img_h = self.image_label.height()
+        
+        # Limit width and update layout
+        max_w = int(img_w * 0.8)
+        self.subtitle_label.setMaximumWidth(max_w)
+        self.subtitle_label.adjustSize()
+        
         sub_w = self.subtitle_label.width()
         sub_h = self.subtitle_label.height()
         
         # Position at bottom center (with some margin)
         self.subtitle_label.move(
             (img_w - sub_w) // 2,
-            img_h - sub_h - 20
+            img_h - sub_h - 30
         )
     
     def _on_duration_changed(self, duration: int):
@@ -339,15 +350,15 @@ class PreviewWidget(QWidget):
     def _on_state_changed(self, state):
         """Handle playback state change"""
         if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.btn_play.setText("⏸️ 일시정지")
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
             self.status_label.setText("재생 중")
             self.status_label.setStyleSheet("color: #4CAF50;")
         elif state == QMediaPlayer.PlaybackState.PausedState:
-            self.btn_play.setText("▶️ 재생")
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.status_label.setText("일시정지")
             self.status_label.setStyleSheet("color: orange;")
         else:
-            self.btn_play.setText("▶️ 재생")
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.status_label.setText("정지")
             self.status_label.setStyleSheet("color: gray;")
     
@@ -395,10 +406,11 @@ class PreviewWidget(QWidget):
                     self.set_image(image)
     
     def resizeEvent(self, event):
-        """Handle resize to refresh image scaling"""
+        """Handle resize to refresh image scaling and subtitle position"""
         super().resizeEvent(event)
         if self.current_image:
             self.set_image(self.current_image)
+        self._reposition_subtitle()
     
     def clear_preview(self):
         """Clear all preview data and reset to initial state"""
@@ -424,7 +436,7 @@ class PreviewWidget(QWidget):
         self.seek_slider.setValue(0)
         self.status_label.setText("대기 중")
         self.status_label.setStyleSheet("color: gray;")
-        self.btn_play.setText("▶️ 재생")
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
     
     def cleanup(self):
         """Cleanup resources"""

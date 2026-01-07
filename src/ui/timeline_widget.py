@@ -383,6 +383,11 @@ class TimelineCanvas(QWidget):
     
     def _draw_grid(self, painter: QPainter):
         """Draw time grid lines and labels"""
+        # Draw header background
+        painter.fillRect(0, 0, self.width(), self.header_height, QColor("#2D2D2D"))
+        painter.setPen(QPen(QColor("#333333"), 1))
+        painter.drawLine(0, self.header_height, self.width(), self.header_height)
+        
         painter.setPen(QPen(self.grid_color))
         painter.setFont(QFont("Arial", 8))
         
@@ -952,21 +957,20 @@ class TimelineWidget(QWidget):
         self.track_labels = QWidget()
         self.track_labels.setStyleSheet("background-color: #252525;")
         track_labels_layout = QVBoxLayout(self.track_labels)
-        track_labels_layout.setContentsMargins(5, 25, 5, 0)
+        track_labels_layout.setContentsMargins(0, 25, 0, 0) # Top margin matches header height
+        track_labels_layout.setSpacing(5) # Spacing matches track padding
         
-        audio_label = QLabel("🎵 Audio")
-        audio_label.setStyleSheet("color: #ccc;")
-        track_labels_layout.addWidget(audio_label)
-        track_labels_layout.addSpacing(45)
+        # Helper to create centered label with fixed height
+        def create_track_label(text):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("color: #ccc; font-weight: bold;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setFixedHeight(50) # Match track height
+            return lbl
         
-        subtitle_label = QLabel("💬 Subs")
-        subtitle_label.setStyleSheet("color: #ccc;")
-        track_labels_layout.addWidget(subtitle_label)
-        track_labels_layout.addSpacing(45)
-        
-        image_label = QLabel("🖼️ Images")
-        image_label.setStyleSheet("color: #ccc;")
-        track_labels_layout.addWidget(image_label)
+        track_labels_layout.addWidget(create_track_label("오디오"))
+        track_labels_layout.addWidget(create_track_label("자막"))
+        track_labels_layout.addWidget(create_track_label("이미지"))
         track_labels_layout.addStretch()
         
         self.track_labels.setFixedWidth(70)

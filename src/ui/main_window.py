@@ -11,20 +11,73 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
     QSplitter, QTextEdit, QSlider, QSpinBox, QProgressBar,
     QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QComboBox
+    QHeaderView, QComboBox, QToolBar, QStyle, QMenu, QStatusBar, QSizePolicy,
+    QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QPalette, QFontMetrics
 from typing import TYPE_CHECKING
 
 from .timeline_widget import TimelineWidget
 from .preview_widget import PreviewWidget
 from .settings_widget import SettingsWidget, SettingsDialog
+from .theme import ModernDarkTheme
 from config import DEFAULT_GAP_SECONDS
 from runtime_config import get_config, set_config, RuntimeConfig
 
 if TYPE_CHECKING:
     from pydub import AudioSegment
+
+
+
+class ImageGridDelegate(QStyledItemDelegate):
+    """Custom delegate to render icons with text below in ListMode"""
+    def paint(self, painter, option, index):
+        option = QStyleOptionViewItem(option)
+        self.initStyleOption(option, index)
+        
+        # Draw standard background (selection/hover)
+        style = option.widget.style() if option.widget else QApplication.style()
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
+        
+        # Layout metrics
+        rect = option.rect
+        icon_size = 64
+        spacing_text = 2 # Closer text
+        
+        # Draw Icon (Centered horizontally, Top aligned)
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        actual_icon_h = 0
+        if icon:
+            pixmap = icon.pixmap(icon_size, icon_size)
+            if not pixmap.isNull():
+                # Center pixmap horizontally in the cell
+                x = rect.x() + (rect.width() - pixmap.width()) // 2
+                y = rect.y() + 5 # Small top padding
+                painter.drawPixmap(x, y, pixmap)
+                actual_icon_h = pixmap.height()
+            
+        # Draw Text (Centered horizontally, Below icon)
+        text = index.data(Qt.ItemDataRole.DisplayRole)
+        if text:
+            # Text area below icon - dynamic Y based on actual icon height
+            y_offset = (actual_icon_h if actual_icon_h > 0 else icon_size) + 5 + spacing_text
+            text_rect = QRect(rect.x(), rect.y() + int(y_offset), rect.width(), 20)
+            
+            # Elide text if needed
+            fm = QFontMetrics(option.font)
+            elided_text = fm.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width() - 4)
+            
+            # Text color
+            painter.setPen(option.palette.color(QPalette.ColorRole.Text))
+            if option.state & QStyle.StateFlag.State_Selected:
+                 painter.setPen(option.palette.color(QPalette.ColorRole.HighlightedText))
+                 
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_text)
+            
+    def sizeHint(self, option, index):
+        # Reduced height (110 -> 100) for tighter spacing
+        return QSize(100, 100)
 
 
 class RenderThread(QThread):
@@ -274,8 +327,8 @@ class MainWindow(QMainWindow):
         # Runtime configuration
         self.runtime_config = get_config()
         
-        self._setup_ui()
         self._setup_menu_bar()
+        self._setup_ui()
 
     def _make_unique_clip_id(self, base_id: str) -> str:
         """Generate a clip id that is unique within the current timeline."""
@@ -292,12 +345,12 @@ class MainWindow(QMainWindow):
         return f"{base_id}_{suffix}"
     
     def _setup_menu_bar(self):
-        """Setup the menu bar with File menu"""
+        """Setup the menu bar with comprehensive options"""
         from PyQt6.QtGui import QAction, QKeySequence
         
         menu_bar = self.menuBar()
         
-        # File menu
+        # --- File Menu ---
         file_menu = menu_bar.addMenu("파일(&F)")
         
         # New project
@@ -325,33 +378,85 @@ class MainWindow(QMainWindow):
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_as_action.triggered.connect(self._save_project_as)
         file_menu.addAction(save_as_action)
+        
+        file_menu.addSeparator()
+        
+        # Settings (Moved to File menu)
+        settings_action = QAction("설정(&T)...", self)
+        settings_action.triggered.connect(self._show_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("종료(&X)", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # --- Project Menu ---
+        project_menu = menu_bar.addMenu("프로젝트(&P)")
+        
+        load_script_action = QAction("스크립트 불러오기...", self)
+        load_script_action.triggered.connect(self._load_script)
+        project_menu.addAction(load_script_action)
+        
+        load_images_action = QAction("이미지 폴더 불러오기...", self)
+        load_images_action.triggered.connect(self._load_image_folder)
+        project_menu.addAction(load_images_action)
+        
+        # --- Tools Menu ---
+        tools_menu = menu_bar.addMenu("도구(&T)")
+        
+        self.action_process = QAction("처리 시작", self)
+        self.action_process.setShortcut(QKeySequence("F5"))
+        self.action_process.triggered.connect(self._start_processing)
+        self.action_process.setEnabled(False)
+        tools_menu.addAction(self.action_process)
+        
+        tools_menu.addSeparator()
+        
+        self.action_format_subs = QAction("자막 자동 정리", self)
+        self.action_format_subs.triggered.connect(self._auto_format_subtitles)
+        self.action_format_subs.setEnabled(False)
+        tools_menu.addAction(self.action_format_subs)
+        
+        self.action_apply_images = QAction("이미지 일괄 적용", self)
+        self.action_apply_images.triggered.connect(self._apply_images_to_timeline)
+        self.action_apply_images.setEnabled(False)
+        tools_menu.addAction(self.action_apply_images)
+        
+        # --- Export Menu ---
+        export_menu = menu_bar.addMenu("내보내기(&E)")
+        
+        self.action_render = QAction("영상 렌더링...", self)
+        self.action_render.setShortcut(QKeySequence("F9"))
+        self.action_render.triggered.connect(self._render_video)
+        self.action_render.setEnabled(False)
+        export_menu.addAction(self.action_render)
+        
+        export_menu.addSeparator()
+        
+        self.action_export_srt = QAction("SRT 자막 내보내기...", self)
+        self.action_export_srt.triggered.connect(self._export_srt)
+        self.action_export_srt.setEnabled(False)
+        export_menu.addAction(self.action_export_srt)
+        
+        self.action_export_xml = QAction("XML 프로젝트 내보내기...", self)
+        self.action_export_xml.triggered.connect(self._export_xml)
+        self.action_export_xml.setEnabled(False)
+        export_menu.addAction(self.action_export_xml)
     
     def _setup_ui(self):
         """Setup the main UI layout"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Apply global style for Splitters
-        self.setStyleSheet("""
-            QSplitter::handle {
-                background-color: transparent;
-            }
-            QSplitter::handle:hover {
-                background-color: transparent;
-            }
-            QSplitter::handle:horizontal {
-                width: 10px;
-            }
-            QSplitter::handle:vertical {
-                height: 10px;
-            }
-        """)
+        # --- Main Toolbar ---
+        self._create_main_toolbar()
         
         main_layout = QVBoxLayout(central_widget)
-        
-        # Top toolbar
-        toolbar = self._create_toolbar()
-        main_layout.addLayout(toolbar)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
         # Main content area (splitter)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -365,53 +470,38 @@ class MainWindow(QMainWindow):
         right_panel = self._create_right_panel()
         splitter.addWidget(right_panel)
         
-        splitter.setSizes([450, 750])
+        splitter.setSizes([400, 800])
         main_layout.addWidget(splitter, 1)
         
-        # Bottom controls
-        # Status bar controls
-        self._create_bottom_controls()
-        
-        # Status bar
-        # Status bar
+        # Status bar is already created by QMainWindow
         self.statusBar().showMessage("준비")
-        self.statusBar().setSizeGripEnabled(False)  # Remove size grip for balance
     
-    def _create_toolbar(self) -> QHBoxLayout:
-        """Create the top toolbar"""
-        layout = QHBoxLayout()
+    def _create_main_toolbar(self):
+        """Create the top main toolbar"""
+        toolbar = QToolBar("Main Toolbar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         
-        # Script button
-        self.btn_script = QPushButton("📂 스크립트")
-        self.btn_script.clicked.connect(self._load_script)
-        layout.addWidget(self.btn_script)
+        # Add actions
+        toolbar.addAction(self.action_process)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_format_subs)
+        toolbar.addAction(self.action_apply_images)
         
-        # Image folder button
-        self.btn_image = QPushButton("🖼️ 이미지 폴더")
-        self.btn_image.clicked.connect(self._load_image_folder)
-        layout.addWidget(self.btn_image)
+        # Spacer
+        dummy = QWidget()
+        dummy.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+        toolbar.addWidget(dummy)
         
-        # Settings button
-        self.btn_settings = QPushButton("⚙️ 설정")
-        self.btn_settings.clicked.connect(self._show_settings)
-        layout.addWidget(self.btn_settings)
-        
-        layout.addStretch()
-        
-        # Process button
-        self.btn_process = QPushButton("▶️ 처리 시작")
-        self.btn_process.clicked.connect(self._start_processing)
-        self.btn_process.setEnabled(False)
-        layout.addWidget(self.btn_process)
-        
-        # Subtitle auto-format button
-        self.btn_format_subtitles = QPushButton("🔧 자막 자동 정리")
-        self.btn_format_subtitles.setToolTip("자막에 줄바꿈 적용 및 긴 자막 분할")
-        self.btn_format_subtitles.clicked.connect(self._auto_format_subtitles)
-        self.btn_format_subtitles.setEnabled(False)
-        layout.addWidget(self.btn_format_subtitles)
-        
-        return layout
+        # Right side actions
+        toolbar.addAction(self.action_render)
+
     
     def _create_left_panel(self) -> QWidget:
         """Create left panel with script view and speaker mapping"""
@@ -428,25 +518,28 @@ class MainWindow(QMainWindow):
         # --- 1. Script Section ---
         script_group = QGroupBox("스크립트")
         script_layout = QVBoxLayout(script_group)
+        script_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency 
+        # No local buttons anymore, functionality moved to Project menu
         self.script_text = QTextEdit()
         self.script_text.setReadOnly(True)
-        self.script_text.setPlaceholderText("스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
-        # Removed setMaximumHeight to allow splitter resizing
+        self.script_text.setPlaceholderText("여기를 클릭하여 스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
+        # Install event filter for click-to-load
+        self.script_text.viewport().installEventFilter(self)
+        
         script_layout.addWidget(self.script_text)
         splitter.addWidget(script_group)
         
         # --- 2. Speaker Mapping Section ---
-        mapping_group = QGroupBox("화자별 오디오 매핑")
+        mapping_group = QGroupBox("화자별 오디오")
         mapping_layout = QVBoxLayout(mapping_group)
-        
-        # Table for speaker-audio mapping
+        mapping_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency
         self.mapping_table = QTableWidget()
-        self.mapping_table.setColumnCount(3)
-        self.mapping_table.setHorizontalHeaderLabels(["화자", "오디오 파일", "선택"])
+        self.mapping_table.setColumnCount(2)
+        self.mapping_table.setHorizontalHeaderLabels(["화자", "오디오 파일 (클릭하여 파일 지정)"])
         self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.mapping_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.mapping_table.cellClicked.connect(self._on_mapping_table_clicked)
         mapping_layout.addWidget(self.mapping_table)
         
         # Info label
@@ -459,25 +552,31 @@ class MainWindow(QMainWindow):
         # --- 3. Image Files Section ---
         image_group = QGroupBox("이미지 파일")
         image_layout = QVBoxLayout(image_group)
+        image_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency
         
         # Image list with thumbnails and drag-drop reordering
         self.image_list = QListWidget()
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.image_list.setIconSize(QSize(48, 48))  # Thumbnail size
+        self.image_list.setIconSize(QSize(64, 64))  # Larger thumbnails
+        self.image_list.setGridSize(QSize(100, 100))  # Match delegate sizeHint for consistent spacing
+        # Use ListMode with wrapping for proper reordering behavior (IconMode allows free positioning)
+        self.image_list.setViewMode(QListWidget.ViewMode.ListMode)
+        self.image_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.image_list.setWrapping(True)
+        self.image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Multi-select with Ctrl/Shift
         self.image_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)  # Enable reordering
         self.image_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.image_list.setDragEnabled(True)
         self.image_list.setAcceptDrops(True)
+        
+        # Use custom delegate to draw text BELOW icon
+        self.image_list.setItemDelegate(ImageGridDelegate(self.image_list))
+        
+        # Install event filter for click-to-load
+        self.image_list.viewport().installEventFilter(self)
+        
         image_layout.addWidget(self.image_list)
-        
-        # Apply images button
-        self.btn_apply_images = QPushButton("🖼️ 이미지 일괄 적용")
-        self.btn_apply_images.setToolTip("이미지 목록 순서대로 오디오 클립에 1:1 매핑")
-        self.btn_apply_images.clicked.connect(self._apply_images_to_timeline)
-        self.btn_apply_images.setEnabled(False)
-        image_layout.addWidget(self.btn_apply_images)
-        
         splitter.addWidget(image_group)
         
         # Set initial sizes
@@ -551,31 +650,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return container
     
+    def eventFilter(self, source, event):
+        """Handle clicks on placeholders when empty"""
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            if source is self.script_text.viewport() and not self.script_path:
+                self._load_script()
+                return True
+            elif source is self.image_list.viewport() and not self.image_folder:
+                self._load_image_folder()
+                return True
+        return super().eventFilter(source, event)
+    
     def _create_bottom_controls(self):
-        """Create controls in status bar"""
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 15, 5)
-        layout.setSpacing(10)
-        
-        # Export buttons
-        self.btn_export_srt = QPushButton("📥 SRT 내보내기")
-        self.btn_export_srt.clicked.connect(self._export_srt)
-        self.btn_export_srt.setEnabled(False)
-        layout.addWidget(self.btn_export_srt)
-        
-        self.btn_export_xml = QPushButton("📥 XML 내보내기")
-        self.btn_export_xml.clicked.connect(self._export_xml)
-        self.btn_export_xml.setEnabled(False)
-        layout.addWidget(self.btn_export_xml)
-        
-        self.btn_render = QPushButton("🎬 영상 렌더링")
-        self.btn_render.clicked.connect(self._render_video)
-        self.btn_render.setEnabled(False)
-        layout.addWidget(self.btn_render)
-        
-        # Add to status bar
-        self.statusBar().addPermanentWidget(container)
+        """Create controls in status bar - Removed as they are now in Toolbar/Menu"""
+        pass
     
     def _load_script(self):
         """Load script file and detect speakers"""
@@ -587,8 +675,6 @@ class MainWindow(QMainWindow):
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 self.script_text.setText(content)
-            
-            self.btn_script.setText(f"📂 {Path(path).name}")
             
             # Parse script to detect speakers
             self._detect_speakers()
@@ -619,17 +705,21 @@ class MainWindow(QMainWindow):
             audio_item.setForeground(QColor(150, 150, 150))
             self.mapping_table.setItem(i, 1, audio_item)
             
-            # Select button
-            btn = QPushButton("📂 선택")
-            btn.clicked.connect(lambda checked, s=speaker, row=i: self._select_audio_for_speaker(s, row))
-            self.mapping_table.setCellWidget(i, 2, btn)
-            
             self.speaker_audio_map[speaker] = ""
+        
+        # Enable grid lines for better visibility
+        self.mapping_table.setShowGrid(True)
+        self.mapping_table.setStyleSheet("QTableWidget::item { border-bottom: 1px solid #333333; }")
         
         # Update info
         self.mapping_info.setText(f"{len(self.speakers)}명의 화자 감지됨. 각 화자에 오디오 파일을 지정하세요.")
         self.mapping_info.setStyleSheet("color: orange;")
     
+    def _on_mapping_table_clicked(self, row, column):
+        """Handle click on speaker mapping table"""
+        speaker = self.mapping_table.item(row, 0).text()
+        self._select_audio_for_speaker(speaker, row)
+        
     def _select_audio_for_speaker(self, speaker: str, row: int):
         """Open file dialog to select audio for a specific speaker"""
         path, _ = QFileDialog.getOpenFileName(
@@ -654,10 +744,10 @@ class MainWindow(QMainWindow):
         total = len(self.speakers)
         
         if mapped == total:
-            self.mapping_info.setText(f"✅ 모든 화자({total}명)에 오디오가 지정되었습니다!")
+            self.mapping_info.setText(f"모든 화자({total}명)에 오디오가 지정되었습니다!")
             self.mapping_info.setStyleSheet("color: green;")
         else:
-            self.mapping_info.setText(f"⚠️ {mapped}/{total}명 지정됨. 모든 화자에 오디오를 지정하세요.")
+            self.mapping_info.setText(f"{mapped}/{total}명 지정됨. 모든 화자에 오디오를 지정하세요.")
             self.mapping_info.setStyleSheet("color: orange;")
     
     def _load_image_folder(self):
@@ -666,19 +756,25 @@ class MainWindow(QMainWindow):
         if path:
             self.image_folder = path
             self._populate_image_list(path)
-            self.btn_image.setText(f"🖼️ {Path(path).name}")
             
             # If processing is already done, enable apply button
             if self.timeline_widget.canvas.clips:
-                self.btn_apply_images.setEnabled(True)
+                self.action_apply_images.setEnabled(True)
     
     def _populate_image_list(self, folder_path: str):
-        """Populate image list with thumbnails"""
+        """Populate image list with thumbnails (with natural sorting)"""
+        import re
+        def natural_key(text):
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+
         self.image_list.clear()
         image_path = Path(folder_path)
         images = []
         for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-            images.extend(sorted(image_path.glob(ext)))
+            images.extend(image_path.glob(ext))
+        
+        # Sort images naturally (1, 2, 10 instead of 1, 10, 2)
+        images.sort(key=lambda x: natural_key(x.name))
         
         for f in images:
             # Create thumbnail
@@ -785,11 +881,11 @@ class MainWindow(QMainWindow):
         # Need script and all speakers mapped
         all_mapped = all(self.speaker_audio_map.get(s) for s in self.speakers)
         ready = bool(self.script_path and self.speakers and all_mapped)
-        self.btn_process.setEnabled(ready)
+        self.action_process.setEnabled(ready)
     
     def _start_processing(self):
         """Start the processing thread"""
-        self.btn_process.setEnabled(False)
+        self.action_process.setEnabled(False)
         self.statusBar().showMessage("처리 중...")
         
         self.processing_thread = ProcessingThread(
@@ -807,14 +903,14 @@ class MainWindow(QMainWindow):
     
     def _on_processing_finished(self, success: bool, message: str, result: Optional[dict]):
         """Handle processing completion"""
-        self.btn_process.setEnabled(True)
+        self.action_process.setEnabled(True)
         self.result_data = result
         
         if success:
             self.statusBar().showMessage("처리 완료")
-            self.btn_export_srt.setEnabled(True)
-            self.btn_export_xml.setEnabled(True)
-            self.btn_render.setEnabled(True)
+            self.action_export_srt.setEnabled(True)
+            self.action_export_xml.setEnabled(True)
+            self.action_render.setEnabled(True)
             
             # Update timeline with aligned clips
             if result and 'aligned' in result:
@@ -824,7 +920,7 @@ class MainWindow(QMainWindow):
                 
                 # Enable image apply button if we have images
                 if self.image_list.count() > 0:
-                    self.btn_apply_images.setEnabled(True)
+                    self.action_apply_images.setEnabled(True)
             
             QMessageBox.information(self, "완료", message)
         else:
@@ -959,7 +1055,7 @@ class MainWindow(QMainWindow):
         self.preview_widget.set_timeline_clips(clips)
         
         # Enable subtitle formatting button
-        self.btn_format_subtitles.setEnabled(True)
+        self.action_format_subs.setEnabled(True)
     
     def _extract_waveform_from_audio(self, audio_segment) -> list[float]:
         """Extract normalized waveform data from an audio segment"""
@@ -1237,15 +1333,15 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         
         if clip.clip_type == "subtitle":
-            edit_action = menu.addAction("✏️ 텍스트 수정")
-            split_action = menu.addAction("✂️ 자막 나누기...")
+            edit_action = menu.addAction("텍스트 수정")
+            split_action = menu.addAction("자막 나누기...")
             menu.addSeparator()
             
             # Find if there's a next subtitle clip
             next_clip = self._find_adjacent_subtitle(clip, direction=1)
             merge_action = None
             if next_clip:
-                merge_action = menu.addAction("🔗 다음 자막과 병합")
+                merge_action = menu.addAction("다음 자막과 병합")
             
             action = menu.exec(pos)
             
@@ -1257,10 +1353,10 @@ class MainWindow(QMainWindow):
                 self._merge_subtitle_clips(clip, next_clip)
         
         elif clip.clip_type == "image":
-            change_image_action = menu.addAction("🖼️ 이미지 변경...")
-            realign_action = menu.addAction("🔄 여기서 다시 정렬")
+            change_image_action = menu.addAction("이미지 변경...")
+            realign_action = menu.addAction("여기서 다시 정렬")
             menu.addSeparator()
-            delete_action = menu.addAction("🗑️ 삭제")
+            delete_action = menu.addAction("삭제")
             
             action = menu.exec(pos)
             
@@ -1272,7 +1368,7 @@ class MainWindow(QMainWindow):
                 self._delete_clip(clip)
         
         elif clip.clip_type == "audio":
-            insert_image_action = menu.addAction("🖼️ 이 위치에 이미지 삽입...")
+            insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
             menu.addSeparator()
             
             action = menu.exec(pos)
@@ -2137,7 +2233,7 @@ class MainWindow(QMainWindow):
             return
         
         # For .mp4, launch render thread
-        self.btn_render.setEnabled(False)
+        self.action_render.setEnabled(False)
         self.statusBar().showMessage("렌더링 준비 중...")
         
         # Collect image and subtitle clips
@@ -2209,7 +2305,7 @@ class MainWindow(QMainWindow):
     
     def _on_render_finished(self, success: bool, message: str):
         """Handle render thread completion"""
-        self.btn_render.setEnabled(True)
+        self.action_render.setEnabled(True)
         if success:
             self.statusBar().showMessage("렌더링 완료")
             QMessageBox.information(self, "완료", message)
@@ -2246,12 +2342,8 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.update()
         self.preview_widget.set_timeline_clips([])
         
-        # Reset script UI
+        # Reset UI
         self.script_text.setPlainText("")
-        self.btn_script.setText("📂 스크립트")
-        
-        # Reset image UI
-        self.btn_image.setText("🖼️ 이미지 폴더")
         self.image_list.clear()
         
         # Reset mapping table
@@ -2259,12 +2351,12 @@ class MainWindow(QMainWindow):
         self.mapping_info.setText("스크립트를 불러오면 화자 목록이 표시됩니다.")
         
         # Reset buttons
-        self.btn_process.setEnabled(False)
-        self.btn_format_subtitles.setEnabled(False)
-        self.btn_export_srt.setEnabled(False)
-        self.btn_export_xml.setEnabled(False)
-        self.btn_render.setEnabled(False)
-        self.btn_apply_images.setEnabled(False)
+        self.action_process.setEnabled(False)
+        self.action_format_subs.setEnabled(False)
+        self.action_export_srt.setEnabled(False)
+        self.action_export_xml.setEnabled(False)
+        self.action_render.setEnabled(False)
+        self.action_apply_images.setEnabled(False)
         
         # Reset preview
         self.preview_widget.clear_preview()
@@ -2477,33 +2569,25 @@ class MainWindow(QMainWindow):
         # Update mapping status
         self._update_mapping_status()
         
-        # Restore script label
-        if self.script_path and Path(self.script_path).exists():
-            self.btn_script.setText(f"📂 {Path(self.script_path).name}")
-        else:
-            self.btn_script.setText("📂 스크립트")
-        
         # Restore image folder and list with thumbnails
         self.image_list.clear()
         print(f"Loading image folder: {self.image_folder}")
         if self.image_folder and Path(self.image_folder).exists():
-            self.btn_image.setText(f"🖼️ {Path(self.image_folder).name}")
             self._populate_image_list(self.image_folder)
             print(f"  Loaded images with thumbnails")
         else:
             print(f"  Image folder not found or empty: {self.image_folder}")
-            self.btn_image.setText("🖼️ 이미지 폴더")
         
         # Enable buttons if we have clips
         if clips:
-            self.btn_format_subtitles.setEnabled(True)
-            self.btn_export_srt.setEnabled(True)
-            self.btn_export_xml.setEnabled(True)
-            self.btn_render.setEnabled(True)
+            self.action_format_subs.setEnabled(True)
+            self.action_export_srt.setEnabled(True)
+            self.action_export_xml.setEnabled(True)
+            self.action_render.setEnabled(True)
             
             # Enable image apply button if we have images
             if self.image_list.count() > 0:
-                self.btn_apply_images.setEnabled(True)
+                self.action_apply_images.setEnabled(True)
             
             # Load speaker audio cache for waveform regeneration
             self._load_speaker_audio_cache()
@@ -2596,7 +2680,9 @@ class MainWindow(QMainWindow):
 def main():
     """Application entry point"""
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')
+    
+    # Apply Modern Dark Theme
+    ModernDarkTheme.apply(app)
     
     window = MainWindow()
     window.show()
