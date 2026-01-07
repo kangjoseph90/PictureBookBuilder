@@ -1406,7 +1406,7 @@ class MainWindow(QMainWindow):
         text_edit.setPlainText(clip.name)
         layout.addWidget(text_edit)
         
-        layout.addWidget(QLabel("💡 커서 위치에서 자막이 나눠집니다."))
+        layout.addWidget(QLabel("커서 위치에서 자막이 나눠집니다."))
         
         btn_layout = QHBoxLayout()
         split_btn = QPushButton("나누기")
