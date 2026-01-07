@@ -7,17 +7,20 @@ import torch
 
 from pydub import AudioSegment
 
-from config import VAD_PADDING_MS
+from runtime_config import get_config
 
 
 class VADProcessor:
     """Use Silero VAD for precise voice activity detection"""
     
-    def __init__(self, padding_ms: int = VAD_PADDING_MS):
+    def __init__(self, padding_ms: int | None = None):
         """
         Args:
-            padding_ms: Padding to add before/after detected voice (ms)
+            padding_ms: Padding to add before/after detected voice (ms).
+                       If None, uses runtime config value.
         """
+        if padding_ms is None:
+            padding_ms = get_config().vad_padding_ms
         self.padding_ms = padding_ms
         self.model = None
         self.utils = None

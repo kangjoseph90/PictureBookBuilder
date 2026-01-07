@@ -5,7 +5,8 @@ Supports both stable-ts (accurate) and faster-whisper (fast) backends
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, USE_STABLE_TS
+from config import WHISPER_DEVICE, WHISPER_COMPUTE_TYPE
+from runtime_config import get_config
 
 
 @dataclass
@@ -28,18 +29,27 @@ class TranscriptionResult:
 class Transcriber:
     """Transcribe audio files using Whisper with word-level timestamps
     
-    Backend is selected via USE_STABLE_TS config:
+    Backend is selected via runtime config use_stable_ts:
     - True: stable-ts (more accurate timestamps, slower)
     - False: faster-whisper (faster, less accurate timestamps)
     """
     
     def __init__(
         self,
-        model_size: str = WHISPER_MODEL,
+        model_size: str | None = None,
         device: str = WHISPER_DEVICE,
-        compute_type: str = WHISPER_COMPUTE_TYPE
+        compute_type: str = WHISPER_COMPUTE_TYPE,
+        use_stable_ts: bool | None = None
     ):
-        self.use_stable_ts = USE_STABLE_TS
+        # Use runtime config if not explicitly specified
+        config = get_config()
+        if model_size is None:
+            model_size = config.whisper_model
+        if use_stable_ts is None:
+            use_stable_ts = config.use_stable_ts
+        
+        self.use_stable_ts = use_stable_ts
+        print(f"Transcriber: model={model_size}, use_stable_ts={use_stable_ts}")
         
         if self.use_stable_ts:
             import stable_whisper

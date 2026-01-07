@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING
 
 from .timeline_widget import TimelineWidget
 from .preview_widget import PreviewWidget
+from .settings_widget import SettingsWidget, SettingsDialog
 from config import DEFAULT_GAP_SECONDS
+from runtime_config import get_config, set_config, RuntimeConfig
 
 if TYPE_CHECKING:
     from pydub import AudioSegment
@@ -269,6 +271,9 @@ class MainWindow(QMainWindow):
         self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
         self._waveform_cache: dict[str, list[float]] = {}  # Cache by (clip_id, start, end)
         
+        # Runtime configuration
+        self.runtime_config = get_config()
+        
         self._setup_ui()
         self._setup_menu_bar()
 
@@ -386,6 +391,11 @@ class MainWindow(QMainWindow):
         self.btn_image.clicked.connect(self._load_image_folder)
         layout.addWidget(self.btn_image)
         
+        # Settings button
+        self.btn_settings = QPushButton("⚙️ 설정")
+        self.btn_settings.clicked.connect(self._show_settings)
+        layout.addWidget(self.btn_settings)
+        
         layout.addStretch()
         
         # Process button
@@ -471,7 +481,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(image_group)
         
         # Set initial sizes
-        splitter.setSizes([150, 250, 400])
+        splitter.setSizes([200, 300, 300])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(2, False)
@@ -1532,15 +1542,16 @@ class MainWindow(QMainWindow):
     def _auto_format_subtitles(self):
         """Apply automatic formatting to all subtitle clips"""
         from core.subtitle_processor import SubtitleProcessor
-        from config import (SUBTITLE_MAX_CHARS_PER_SEGMENT, SUBTITLE_MAX_CHARS_PER_LINE,
-                          SUBTITLE_MAX_LINES, SUBTITLE_SPLIT_ON_CONJUNCTIONS)
         from ui.timeline_widget import TimelineClip
         
+        # Use runtime config for subtitle settings
+        config = self.runtime_config
+        
         processor = SubtitleProcessor(
-            max_chars_per_segment=SUBTITLE_MAX_CHARS_PER_SEGMENT,
-            max_chars_per_line=SUBTITLE_MAX_CHARS_PER_LINE,
-            max_lines=SUBTITLE_MAX_LINES,
-            split_on_conjunctions=SUBTITLE_SPLIT_ON_CONJUNCTIONS
+            max_chars_per_segment=config.subtitle_max_chars_per_segment,
+            max_chars_per_line=config.subtitle_max_chars_per_line,
+            max_lines=config.subtitle_max_lines,
+            split_on_conjunctions=config.subtitle_split_on_conjunctions
         )
         
         # Collect subtitle clips
@@ -2295,20 +2306,23 @@ class MainWindow(QMainWindow):
             self._save_project_as()
     
     def _save_project_as(self):
-        """Save project with a new filename"""
-        from PyQt6.QtWidgets import QFileDialog
-        
+        """Save project as a new file"""
         path, _ = QFileDialog.getSaveFileName(
-            self, "프로젝트 저장", "",
-            "PictureBookBuilder Project (*.pbb)"
+            self, "프로젝트 저장", "", "PictureBookBuilder Files (*.pbb);;All Files (*)"
         )
-        
         if path:
             if not path.endswith('.pbb'):
                 path += '.pbb'
-            self._save_to_file(path)
             self.project_path = path
+            self._save_to_file(path)
             self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
+            
+    def _show_settings(self):
+        """Show the settings dialog"""
+        dialog = SettingsDialog(self)
+        dialog.set_config(self.runtime_config)
+        dialog.exec()
+
     
     def _save_to_file(self, path: str):
         """Save project data to file"""
@@ -2350,13 +2364,14 @@ class MainWindow(QMainWindow):
         script_content = self.script_text.toPlainText()
         
         project_data = {
-            'version': '1.0',
+            'version': '1.1',  # Bumped for settings support
             'saved_at': datetime.now().isoformat(),
             'script_path': self.script_path,
             'script_content': script_content,  # Save script content
             'image_folder': self.image_folder,
             'speaker_audio_map': self.speaker_audio_map,
             'clips': clips_data,
+            'settings': self.runtime_config.to_dict(),  # Save settings
         }
         
         try:
@@ -2376,6 +2391,11 @@ class MainWindow(QMainWindow):
         self.script_path = data.get('script_path')
         self.image_folder = data.get('image_folder')
         self.speaker_audio_map = data.get('speaker_audio_map', {})
+        
+        # Load settings if present
+        if 'settings' in data:
+            self.runtime_config = RuntimeConfig.from_dict(data['settings'])
+            set_config(self.runtime_config)
         
         # Load script - prefer from file, fallback to saved content
         if self.script_path and Path(self.script_path).exists():
