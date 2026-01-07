@@ -129,12 +129,45 @@ class TimelineCanvas(QWidget):
         # Audio cache for real-time waveform updates
         self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
         self.waveform_extractor = None  # Will be set by main_window
+        
+        # Throttling for mouse move events (to reduce CPU usage during fast dragging)
+        self._update_throttle_timer = QTimer(self)
+        self._update_throttle_timer.setSingleShot(True)
+        self._update_throttle_timer.timeout.connect(self._process_pending_update)
+        self._update_interval_ms = 16  # ~60fps max update rate
+        self._pending_update = False
+        self._pending_waveform_clip_id: Optional[str] = None
     
     def set_clips(self, clips: list[TimelineClip]):
         """Set the clips to display"""
         self.clips = clips
         self._update_total_duration()
         self.update()
+    
+    def _schedule_throttled_update(self, waveform_clip_id: Optional[str] = None):
+        """Schedule a throttled update to reduce CPU usage during fast dragging.
+        
+        Args:
+            waveform_clip_id: If provided, also update this clip's waveform
+        """
+        self._pending_update = True
+        if waveform_clip_id:
+            self._pending_waveform_clip_id = waveform_clip_id
+        
+        # If timer is not running, start it
+        if not self._update_throttle_timer.isActive():
+            self._update_throttle_timer.start(self._update_interval_ms)
+    
+    def _process_pending_update(self):
+        """Process pending update when throttle timer fires."""
+        if self._pending_update:
+            # Update waveform if needed
+            if self._pending_waveform_clip_id:
+                self.update_clip_waveform(self._pending_waveform_clip_id)
+                self._pending_waveform_clip_id = None
+            
+            self._pending_update = False
+            self.update()
     
     def get_snap_time(self, time: float, exclude_clip_id: str = None) -> float:
         """Find the nearest snap point for a given time"""
@@ -757,11 +790,9 @@ class TimelineCanvas(QWidget):
                         self.linked_clip.start = new_linked_start
                         self.linked_clip.duration = new_linked_duration
             
-            # Update waveform in real-time during resizing
-            self.update_clip_waveform(self.resizing_clip)
-                
+            # Schedule throttled update (waveform update is also throttled)
             self.clip_editing.emit(self.resizing_clip)
-            self.update()
+            self._schedule_throttled_update(waveform_clip_id=self.resizing_clip)
             return
         
         # Handle clip dragging
@@ -823,7 +854,7 @@ class TimelineCanvas(QWidget):
                 else:
                     self.active_snap_time = None
                 
-            self.update()
+            self._schedule_throttled_update()
             return
         
         # Update cursor based on edge proximity
@@ -840,14 +871,26 @@ class TimelineCanvas(QWidget):
             return
         
         if self.resizing_clip:
+            # Flush any pending throttled update immediately
+            self._update_throttle_timer.stop()
+            if self._pending_waveform_clip_id:
+                self.update_clip_waveform(self._pending_waveform_clip_id)
+                self._pending_waveform_clip_id = None
+            self._pending_update = False
+            
             # Emit signal that clip was edited
             self.clip_edited.emit(self.resizing_clip)
             self.resizing_clip = None
             self.resize_edge = ""
             self.active_snap_time = None
+            self.update()
             return
         
         if self.dragging_clip:
+            # Flush any pending throttled update immediately
+            self._update_throttle_timer.stop()
+            self._pending_update = False
+            
             for clip in self.clips:
                 if clip.id == self.dragging_clip:
                     # Only emit if actually moved
@@ -856,6 +899,7 @@ class TimelineCanvas(QWidget):
                     break
             self.dragging_clip = None
             self.active_snap_time = None
+            self.update()
     
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         """Handle mouse double click - for editing subtitles"""
