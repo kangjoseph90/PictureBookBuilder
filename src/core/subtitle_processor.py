@@ -37,18 +37,31 @@ class SubtitleProcessor:
     KOREAN_PARTICLES = set('은는이가을를에서로와과도만요죠')
     KOREAN_ENDINGS = set(['고', '며', '니', '면', '지', '던', '든'])
     
-    # 한국어 의존명사/연결어미 확장 (New)
-    # 단어 뒤에서 끊어야 자연스러운 것들
-    KOREAN_DEPENDENT_NOUNS = {'때', '뒤', '후', '전', '곳', '수', '뿐', '채', '바', '중', '듯', '쪽', '등'}
-    KOREAN_CONNECTIVE_2CHAR = {'는데', '은데', '지만', '다가', '아서', '어서', '해서', '면서', '라도', '니까'}
-    KOREAN_CONNECTIVE_1CHAR = {'서', '나', '니', '매', '와', '아', '어', '해', '게', '지', '고'} # 서(해서/어서), 나(거나), 니(하니), 매(하매), 와(나와), 아/어(하여)
+    # 한국어 의존명사 (단어 뒤에서 분할)
+    KOREAN_DEPENDENT_NOUNS = {
+        '때', '뒤', '후', '전', '곳', '수', '뿐', '채', '바', '중', '듯', '쪽', '등',
+        '데', '리', '김', '것'
+    }
+    
+    # 한국어 연결어미/보조사 (단어 뒤에서 분할)
+    KOREAN_CONNECTIVE_2CHAR = {
+        '는데', '은데', '지만', '다가', '아서', '어서', '해서', '면서', '라도', '니까',
+        '려고', '고자', '러니', '도록', '게끔', '거나', '든지', '느라', '길래', '으며', '으나',
+        '에는', '에게', '한테', '처럼', '만큼', '마저', '조차', '부터', '까지', # 조사 결합형 포함
+        '다면', '라면', '셔야', '봐야' # 조건/당위
+    }
+    KOREAN_CONNECTIVE_1CHAR = {'서', '나', '니', '매', '와', '아', '어', '해', '게', '지', '고', '며', '든'} 
 
     # 영어 접속사/전치사 (3순위) - 공백 뒤 단어 체크
     ENGLISH_CONJUNCTIONS = {
         'and', 'but', 'or', 'so', 'because', 'if', 'when', 'while', 'since', 'that', 'which', 'who',
-        'although', 'though', 'unless', 'until', 'once', 'as', 'where', 'whether'
+        'although', 'though', 'unless', 'until', 'once', 'as', 'where', 'whether',
+        'then', 'yet', 'nor', 'also'
     }
-    ENGLISH_PREPOSITIONS = {'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'about', 'before', 'after'}
+    ENGLISH_PREPOSITIONS = {
+        'to', 'in', 'on', 'at', 'by', 'for', 'with', 'from', 'about', 'before', 'after',
+        'without', 'within', 'during', 'against', 'among', 'between', 'under', 'over', 'through'
+    }
     
     def __init__(
         self,
