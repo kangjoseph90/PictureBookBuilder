@@ -264,7 +264,8 @@ class TimelineCanvas(QWidget):
     
     def get_clip_at(self, x: float, y: float) -> Optional[TimelineClip]:
         """Get the clip at a given position"""
-        for clip in self.clips:
+        # Iterate in reverse so the top-most (last drawn) clip wins when overlapping.
+        for clip in reversed(self.clips):
             clip_x = self.time_to_x(clip.start)
             clip_width = clip.duration * self.zoom
             clip_y = self.get_track_y(clip.track)
@@ -296,7 +297,8 @@ class TimelineCanvas(QWidget):
                     break
 
         # Then check everything else
-        for clip in self.clips:
+        # Iterate in reverse so the top-most (last drawn) clip edge wins when overlapping.
+        for clip in reversed(self.clips):
             # Skip if already checked selected
             if clip.id == self.selected_clip:
                 continue
@@ -407,8 +409,8 @@ class TimelineCanvas(QWidget):
         painter.setPen(QPen(color, 1))
         painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
         
-        # Draw waveform if available
-        if clip.waveform and len(clip.waveform) > 0:
+        # Draw waveform only for audio clips
+        if clip.clip_type == "audio" and clip.waveform and len(clip.waveform) > 0:
             self._draw_waveform(painter, clip, x, y, width, height)
         
         # Draw thumbnail for image clips
