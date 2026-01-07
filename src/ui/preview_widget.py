@@ -134,7 +134,12 @@ class PreviewWidget(QWidget):
             self._target_pos_ms = initial_pos_ms
         else:
             self._target_pos_ms = None
-            
+        
+        # Stop playback and clear source first to force reload
+        # This prevents QMediaPlayer from caching the old file
+        self.media_player.stop()
+        self.media_player.setSource(QUrl())  # Clear source
+        
         url = QUrl.fromLocalFile(audio_path)
         self.media_player.setSource(url)
         self.status_label.setText("준비됨")
@@ -314,6 +319,22 @@ class PreviewWidget(QWidget):
             if self._target_pos_ms < duration:
                 self.media_player.setPosition(self._target_pos_ms)
             self._target_pos_ms = None
+    
+    def set_total_duration(self, duration_sec: float):
+        """Set total duration from timeline (overrides audio-based duration)
+        
+        This allows the preview to show the full timeline duration even if
+        the audio file is shorter than the timeline.
+        
+        Args:
+            duration_sec: Total duration in seconds
+        """
+        if duration_sec > self.total_duration:
+            self.total_duration = duration_sec
+            duration_ms = int(duration_sec * 1000)
+            self.time_label.setText(
+                f"{self._format_time(self.media_player.position())} / {self._format_time(duration_ms)}"
+            )
     
     def _on_state_changed(self, state):
         """Handle playback state change"""

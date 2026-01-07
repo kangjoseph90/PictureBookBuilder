@@ -663,8 +663,15 @@ class TimelineCanvas(QWidget):
                                 new_start = snapped_start
                                 new_duration = self.resize_original_duration - snap_dt
                             
+                            # Limit: offset cannot go below 0 (can't extend before source audio start)
+                            if new_offset < 0:
+                                # Clamp to offset=0 and recalculate
+                                new_offset = 0
+                                actual_dt = -self.resize_original_offset  # How much we actually moved
+                                new_start = self.resize_original_start + actual_dt
+                                new_duration = self.resize_original_duration - actual_dt
+                            
                             # Ensure valid bounds
-                            new_offset = max(0, new_offset)
                             if new_duration > 0.1:
                                 clip.offset = new_offset
                                 clip.start = new_start
@@ -679,6 +686,15 @@ class TimelineCanvas(QWidget):
                             snapped_end = self.get_snap_time(target_end, exclude_clip_id=clip.id)
                             if snapped_end != target_end:
                                 new_duration = snapped_end - self.resize_original_start
+                            
+                            # Limit: cannot extend beyond source audio end
+                            # source_end = offset + duration, so max_duration = source_audio_length - offset
+                            if clip.speaker and clip.speaker in self.speaker_audio_cache:
+                                source_audio = self.speaker_audio_cache[clip.speaker]
+                                source_audio_length = len(source_audio) / 1000.0  # ms to seconds
+                                max_duration = source_audio_length - clip.offset
+                                if new_duration > max_duration:
+                                    new_duration = max_duration
                             
                             if new_duration > 0.1:
                                 clip.duration = new_duration

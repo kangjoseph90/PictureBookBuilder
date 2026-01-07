@@ -1922,6 +1922,10 @@ class MainWindow(QMainWindow):
             if not audio_clips:
                 return
             
+            # Calculate total timeline duration from ALL clips (audio, subtitle, image)
+            all_clips = self.timeline_widget.canvas.clips
+            total_timeline_duration = max((c.start + c.duration for c in all_clips), default=0.0)
+            
             # Build merged audio based on clip data
             result_audio = AudioSegment.empty()
             current_pos = 0.0
@@ -1939,13 +1943,29 @@ class MainWindow(QMainWindow):
                 end_ms = min(len(audio), int(segment_end * 1000))
                 clip_audio = audio[start_ms:end_ms]
                 
-                # Add silence gap if needed
+                # If clip duration is longer than source audio, pad with silence
+                # This happens when user extends the clip beyond the source audio
+                clip_duration_ms = int(clip.duration * 1000)
+                actual_clip_length_ms = len(clip_audio)
+                if clip_duration_ms > actual_clip_length_ms:
+                    padding_needed = clip_duration_ms - actual_clip_length_ms
+                    clip_audio += AudioSegment.silent(duration=padding_needed)
+                
+                # Add silence gap if needed (for gaps between clips on timeline)
                 gap_duration = int((clip.start - current_pos) * 1000)
                 if gap_duration > 0:
                     result_audio += AudioSegment.silent(duration=gap_duration)
                 
                 result_audio += clip_audio
-                current_pos = clip.start + len(clip_audio) / 1000.0
+                # Use clip's timeline position + duration (not extracted audio length)
+                current_pos = clip.start + clip.duration
+            
+            # Pad with silence to reach total timeline duration
+            # This ensures preview plays all the way to the end of the timeline
+            current_length_sec = len(result_audio) / 1000.0
+            if total_timeline_duration > current_length_sec:
+                padding_ms = int((total_timeline_duration - current_length_sec) * 1000)
+                result_audio += AudioSegment.silent(duration=padding_ms)
             
             # Save current playhead position to restore after update
             current_playhead = self.timeline_widget.canvas.playhead_time
@@ -1955,9 +1975,11 @@ class MainWindow(QMainWindow):
             self.preview_audio_path = os.path.join(temp_dir, "pbb_preview.wav")
             result_audio.export(self.preview_audio_path, format='wav')
             
-            # Update preview widget
-            # Pass current_playhead to set_audio to restore position after loading
+            # Update preview widget with timeline-based duration
             self.preview_widget.set_audio(self.preview_audio_path, initial_pos_ms=int(current_playhead * 1000))
+            
+            # Update preview widget total duration to match timeline (in case audio is shorter)
+            self.preview_widget.set_total_duration(total_timeline_duration)
             
             # Also ensure timeline playhead stays in sync (UI side)
             self.timeline_widget.set_playhead(current_playhead)

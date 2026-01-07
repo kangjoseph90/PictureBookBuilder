@@ -131,9 +131,14 @@ class VideoRenderer:
         if not audio_path or not Path(audio_path).exists():
             raise RuntimeError("오디오 파일을 찾을 수 없습니다.")
 
-        total_duration = self._get_audio_duration_seconds(audio_path)
-        if total_duration <= 0:
+        audio_duration = self._get_audio_duration_seconds(audio_path)
+        if audio_duration <= 0:
             raise RuntimeError("오디오 길이를 확인할 수 없습니다.")
+        
+        # Use the maximum of audio duration and image clip end times
+        # This ensures images that extend beyond the audio are rendered correctly
+        max_image_end = max((float(seg.end_time) for seg in images), default=0.0) if images else 0.0
+        total_duration = max(audio_duration, max_image_end)
 
         # Build contiguous visuals covering full audio duration.
         # If image clips overlap, choose the one on the highest track (top-most).
