@@ -76,7 +76,7 @@ class ProcessingThread(QThread):
                         language="ko",
                         initial_prompt=initial_prompt
                     )
-            print(transcriptions)
+
             # Step 4: Align dialogues
             self.progress.emit(50, "대사 정렬 중...")
             aligner = Aligner()
@@ -128,7 +128,7 @@ class ProcessingThread(QThread):
                         # If VAD fails, keep original boundaries
                         print(f"VAD refinement failed for segment {i}: {e}")
                         prev_end_by_speaker[speaker] = segment.end_time
-            print(aligned)
+
             # Step 6: Build result
             self.progress.emit(90, "결과 생성 중...")
             result = {
@@ -1247,16 +1247,30 @@ class MainWindow(QMainWindow):
         )
 
         # Convert source audio time to timeline position
-        # Use first segment의 종료 시각(= split word end) as the boundary, not second segment start
+        # Rule: split boundary is based on the first segment end (source_split_time)
+        # Prefer using the linked audio clip as time anchor (when available), but
+        # fall back to the subtitle clip's own anchor if we can't link reliably.
+        audio_anchor = self._find_linked_audio_clip_for_subtitle(clip)
+        use_audio_anchor = self._is_audio_anchor_usable(clip, audio_anchor) if audio_anchor else False
+
         if clip.words:
             words2 = clip.words[word_idx + 1:] if word_idx + 1 < len(clip.words) else []
-            relative_time = source_split_time - clip.offset
-            split_time = clip.start + relative_time
+            if use_audio_anchor:
+                split_time = audio_anchor.start + (source_split_time - audio_anchor.offset)
+            else:
+                relative_time = source_split_time - clip.offset
+                split_time = clip.start + relative_time
         else:
             # Fallback: estimate based on character position ratio
             ratio = char_pos / len(clip.name)
             split_time = clip.start + clip.duration * ratio
             words2 = []
+
+        # If computed boundary is out of range (e.g., badly desynced), fall back
+        if split_time <= clip.start + 0.05 or split_time >= (clip.start + clip.duration) - 0.05:
+            if clip.words:
+                relative_time = source_split_time - clip.offset
+                split_time = clip.start + relative_time
         
         # Use cursor position directly for text split (user intent)
         # But adjust to keep punctuation with the preceding text
@@ -1296,8 +1310,8 @@ class MainWindow(QMainWindow):
             color=clip.color,
             clip_type="subtitle",
             waveform=[],
-            offset=clip.offset,  # Preserve original offset
-            segment_index=-1,
+            offset=(source_split_time if clip.words else clip.offset),
+            segment_index=clip.segment_index,
             speaker=clip.speaker,  # Preserve speaker info
             words=words2
         )
@@ -1307,6 +1321,63 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage("자막이 나눠졌습니다.")
+
+    def _find_linked_audio_clip_for_subtitle(self, subtitle_clip):
+        """Find the most likely linked audio clip for a subtitle clip.
+
+        Uses segment_index as primary key; falls back to ID conventions.
+        """
+        clips = getattr(self.timeline_widget.canvas, 'clips', [])
+        audio_clips = [c for c in clips if getattr(c, 'clip_type', None) == 'audio']
+        if not audio_clips:
+            return None
+
+        # Strong match: same segment_index
+        if getattr(subtitle_clip, 'segment_index', -1) is not None and subtitle_clip.segment_index >= 0:
+            candidates = [
+                c for c in audio_clips
+                if getattr(c, 'segment_index', -1) == subtitle_clip.segment_index
+                and (not getattr(subtitle_clip, 'speaker', '') or getattr(c, 'speaker', '') == subtitle_clip.speaker)
+            ]
+            if candidates:
+                return min(candidates, key=lambda c: abs(c.start - subtitle_clip.start))
+
+        # Fallback: sub_{i} <-> audio_{i}
+        try:
+            if isinstance(subtitle_clip.id, str) and subtitle_clip.id.startswith('sub_'):
+                base = subtitle_clip.id.split('_', 2)[1]
+                expected_audio_id = f"audio_{base}"
+                for c in audio_clips:
+                    if c.id == expected_audio_id:
+                        return c
+        except Exception:
+            pass
+
+        return None
+
+    def _is_audio_anchor_usable(self, subtitle_clip, audio_clip) -> bool:
+        """Heuristic: determine whether audio anchor is reliable enough.
+
+        If clips are too far apart on timeline or refer to different source ranges,
+        we fall back to the subtitle clip anchor.
+        """
+        if not subtitle_clip or not audio_clip:
+            return False
+
+        # If subtitle was source-trimmed independently, don't try to anchor to audio
+        if abs(getattr(subtitle_clip, 'offset', 0.0) - getattr(audio_clip, 'offset', 0.0)) > 0.1:
+            return False
+
+        sub_start = getattr(subtitle_clip, 'start', 0.0)
+        sub_end = sub_start + getattr(subtitle_clip, 'duration', 0.0)
+        aud_start = getattr(audio_clip, 'start', 0.0)
+        aud_end = aud_start + getattr(audio_clip, 'duration', 0.0)
+
+        # Too far apart (timeline desync)
+        if max(abs(sub_start - aud_start), abs(sub_end - aud_end)) > 2.0:
+            return False
+
+        return True
     
     def _merge_subtitle_clips(self, clip1, clip2):
         """Merge two adjacent subtitle clips"""
@@ -1366,6 +1437,9 @@ class MainWindow(QMainWindow):
         
         for clip in subtitle_clips:
             original_text = clip.name
+
+            audio_anchor = self._find_linked_audio_clip_for_subtitle(clip)
+            use_audio_anchor = self._is_audio_anchor_usable(clip, audio_anchor) if audio_anchor else False
             
             # 1. Check if needs splitting
             if len(original_text) > SUBTITLE_MAX_CHARS_PER_SEGMENT and clip.words:
@@ -1376,21 +1450,59 @@ class MainWindow(QMainWindow):
                     clip.offset + clip.duration,  # Source audio end time
                     clip.words
                 )
-                
+
+                # If audio anchor is usable, compute timeline boundaries from audio,
+                # but keep the current subtitle placement (no snapping).
+                boundaries_timeline = None
+                if use_audio_anchor and len(segments) > 1:
+                    try:
+                        # Internal boundaries are the end_time of each segment except the last
+                        boundaries_timeline = [
+                            audio_anchor.start + (seg['end_time'] - audio_anchor.offset)
+                            for seg in segments[:-1]
+                        ]
+
+                        # Validate boundaries are within the current subtitle clip range
+                        clip_start = clip.start
+                        clip_end = clip.start + clip.duration
+                        for b in boundaries_timeline:
+                            if b <= clip_start + 0.05 or b >= clip_end - 0.05:
+                                boundaries_timeline = None
+                                break
+                    except Exception:
+                        boundaries_timeline = None
+
+                current_start = clip.start
+                clip_end = clip.start + clip.duration
+
+                degenerate_split = False
+
                 for i, seg in enumerate(segments):
                     # Apply line formatting to each segment
                     formatted_text = processor.format_lines(seg['text'])
-                    
-                    # Convert source audio coordinates to timeline coordinates
-                    # seg['start_time'] and seg['end_time'] are in source audio coordinates
-                    # We need to convert them to timeline coordinates
-                    timeline_start = clip.start + (seg['start_time'] - clip.offset)
-                    timeline_duration = seg['end_time'] - seg['start_time']
-                    
-                    # For the first segment, keep the original offset
-                    # For subsequent segments, use their own start time as offset
+
+                    if boundaries_timeline is not None:
+                        # Place segments based on audio-derived boundaries, within current clip
+                        if i < len(boundaries_timeline):
+                            current_end = boundaries_timeline[i]
+                        else:
+                            current_end = clip_end
+
+                        timeline_start = current_start
+                        timeline_duration = current_end - current_start
+                        current_start = current_end
+                    else:
+                        # Fallback: preserve existing behavior (subtitle-anchor)
+                        timeline_start = clip.start + (seg['start_time'] - clip.offset)
+                        timeline_duration = seg['end_time'] - seg['start_time']
+
+                    if timeline_duration <= 0.05:
+                        # Degenerate split, fall back to not splitting this clip
+                        degenerate_split = True
+                        break
+
                     segment_offset = seg['start_time']
-                    
+
                     new_clip = TimelineClip(
                         id=f"{clip.id}_fmt_{i}" if i > 0 else clip.id,
                         name=formatted_text,
@@ -1400,14 +1512,23 @@ class MainWindow(QMainWindow):
                         color=clip.color,
                         clip_type="subtitle",
                         waveform=[],
-                        offset=segment_offset,  # Use segment's own offset
-                        segment_index=clip.segment_index if i == 0 else -1,
-                        speaker=clip.speaker,  # Preserve speaker info
+                        offset=segment_offset,
+                        segment_index=clip.segment_index,
+                        speaker=clip.speaker,
                         words=seg['words']
                     )
                     new_clips.append(new_clip)
-                
-                if len(segments) > 1:
+
+                # If we bailed out due to degenerate boundaries, keep original clip (formatted)
+                if degenerate_split:
+                    # Remove any partial additions for this clip and fall back to formatting only
+                    while new_clips and (new_clips[-1].id == clip.id or new_clips[-1].id.startswith(f"{clip.id}_fmt_")):
+                        new_clips.pop()
+                    formatted_text = processor.format_lines(original_text)
+                    clip.name = formatted_text
+                    new_clips.append(clip)
+
+                if (not degenerate_split) and len(segments) > 1:
                     split_count += 1
             else:
                 # Just apply line formatting
