@@ -1651,19 +1651,33 @@ class MainWindow(QMainWindow):
         # Use runtime config for subtitle settings
         config = self.runtime_config
         
-        processor = SubtitleProcessor(
-            line_soft_cap=config.subtitle_line_soft_cap,
-            line_hard_cap=config.subtitle_line_hard_cap,
-            max_lines=config.subtitle_max_lines,
-            split_on_conjunctions=config.subtitle_split_on_conjunctions
-        )
-        
         # Collect subtitle clips
         subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
         
         if not subtitle_clips:
             self.statusBar().showMessage("자막 클립이 없습니다.")
             return
+        
+        # Create processors for each language (cached)
+        processor_cache = {}
+        
+        def get_processor(language: str) -> SubtitleProcessor:
+            if language not in processor_cache:
+                if config.subtitle_auto_params:
+                    params = config.get_subtitle_params(language)
+                else:
+                    params = {
+                        'line_soft_cap': config.subtitle_line_soft_cap,
+                        'line_hard_cap': config.subtitle_line_hard_cap,
+                        'max_lines': config.subtitle_max_lines,
+                    }
+                processor_cache[language] = SubtitleProcessor(
+                    line_soft_cap=params['line_soft_cap'],
+                    line_hard_cap=params['line_hard_cap'],
+                    max_lines=params['max_lines'],
+                    split_on_conjunctions=config.subtitle_split_on_conjunctions
+                )
+            return processor_cache[language]
         
         new_clips = []
         existing_non_subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type != "subtitle"]
@@ -1690,6 +1704,12 @@ class MainWindow(QMainWindow):
                 f"subseg_{clip.segment_index}" if getattr(clip, 'segment_index', -1) is not None and clip.segment_index >= 0
                 else "subseg"
             )
+            
+            # Detect language and get appropriate processor
+            if '_detector' not in processor_cache:
+                processor_cache['_detector'] = SubtitleProcessor()
+            language = processor_cache['_detector'].detect_language(original_text)
+            processor = get_processor(language)
             
             # NEW API: 1. 텍스트만으로 분할 포인트 찾기
             segment_splits = processor.find_split_points(original_text, is_segment=True)
