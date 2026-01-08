@@ -55,8 +55,8 @@ class PreviewWidget(QWidget):
         # Subtitle overlay (on top of image)
         self.subtitle_label = QLabel(self.image_label)
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Word wrap enabled to prevent off-screen text on small windows
-        self.subtitle_label.setWordWrap(True)
+        # Word wrap disabled - subtitles should only break at explicit \n
+        self.subtitle_label.setWordWrap(False)
         self.subtitle_label.setStyleSheet("""
             QLabel {
                 color: white;
