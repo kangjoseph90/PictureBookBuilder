@@ -1426,19 +1426,14 @@ class MainWindow(QMainWindow):
         dialog.exec()
     
     def _split_subtitle_at(self, clip, char_pos: int):
-        """Split subtitle clip at character position"""
+        """Split subtitle clip at character position (NEW API)"""
         from core.subtitle_processor import SubtitleProcessor
         
         if char_pos <= 0 or char_pos >= len(clip.name):
             self.statusBar().showMessage("나눌 위치가 올바르지 않습니다.")
             return
         
-        processor = SubtitleProcessor()
-        split_pos, source_split_time, word_idx = processor.find_best_split_point(
-            clip.name, clip.words, char_pos
-        )
-
-        # Audio-anchored split only (no subtitle-anchor fallback).
+        # Audio-anchored split only
         if not clip.words:
             self.statusBar().showMessage("단어 타임스탬프가 없어 오디오 기준 분할을 할 수 없습니다.")
             return
@@ -1448,12 +1443,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("연결된 오디오 클립을 찾지 못해 분할할 수 없습니다.")
             return
 
-        words2 = clip.words[word_idx + 1:] if word_idx + 1 < len(clip.words) else []
+        processor = SubtitleProcessor()
+        
+        # NEW API: 통합 Fuzzy Matching으로 타임스탬프 계산
+        split_indices = [char_pos]
+        timestamps = processor.calculate_split_times(clip.name, split_indices, clip.words)
+        
+        if not timestamps:
+            self.statusBar().showMessage("분할 타임스탬프 계산에 실패했습니다.")
+            return
+        
+        source_split_time = timestamps[0]
         split_time = audio_anchor.start + (source_split_time - audio_anchor.offset)
 
-        # Final guard: do not allow splits outside the current clip span.
-        # This can happen if the subtitle clip was trimmed/moved such that the
-        # requested split refers to time that isn't inside this clip.
+        # Final guard: do not allow splits outside the current clip span
         clip_start = clip.start
         clip_end = clip.start + clip.duration
         if split_time <= clip_start + 0.05 or split_time >= clip_end - 0.05:
@@ -1463,20 +1466,25 @@ class MainWindow(QMainWindow):
             return
         
         # Use cursor position directly for text split (user intent)
-        # But adjust to keep punctuation with the preceding text
         actual_split_pos = char_pos
         
-        # If the character right before cursor is punctuation, include it in first part
-        # (already handled by cursor position)
-        # If the character at cursor is space, skip it
+        # Skip trailing spaces
         while actual_split_pos < len(clip.name) and clip.name[actual_split_pos] == ' ':
             actual_split_pos += 1
         
-        # Create two new clips
+        # Create two text segments
         text1 = clip.name[:actual_split_pos].strip()
         text2 = clip.name[actual_split_pos:].strip()
-        words1 = clip.words[:word_idx + 1] if clip.words else []
-        # words2 already computed above
+        
+        # Split words based on fuzzy-matched timestamp
+        words1 = []
+        words2 = []
+        for w in clip.words:
+            w_end = w.end if hasattr(w, 'end') else 0.0
+            if w_end <= source_split_time:
+                words1.append(w)
+            else:
+                words2.append(w)
         
         # Save original end time before modifying
         original_end = clip.start + clip.duration
@@ -1500,9 +1508,9 @@ class MainWindow(QMainWindow):
             color=clip.color,
             clip_type="subtitle",
             waveform=[],
-            offset=(source_split_time if clip.words else clip.offset),
+            offset=source_split_time,
             segment_index=clip.segment_index,
-            speaker=clip.speaker,  # Preserve speaker info
+            speaker=clip.speaker,
             words=words2
         )
         
@@ -1636,7 +1644,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("자막이 병합되었습니다.")
     
     def _auto_format_subtitles(self):
-        """Apply automatic formatting to all subtitle clips"""
+        """Apply automatic formatting to all subtitle clips (NEW API)"""
         from core.subtitle_processor import SubtitleProcessor
         from ui.timeline_widget import TimelineClip
         
@@ -1644,8 +1652,8 @@ class MainWindow(QMainWindow):
         config = self.runtime_config
         
         processor = SubtitleProcessor(
-            max_chars_per_segment=config.subtitle_max_chars_per_segment,
-            max_chars_per_line=config.subtitle_max_chars_per_line,
+            line_soft_cap=config.subtitle_line_soft_cap,
+            line_hard_cap=config.subtitle_line_hard_cap,
             max_lines=config.subtitle_max_lines,
             split_on_conjunctions=config.subtitle_split_on_conjunctions
         )
@@ -1683,130 +1691,25 @@ class MainWindow(QMainWindow):
                 else "subseg"
             )
             
-            # 1. Check if needs splitting
-            if len(original_text) > config.subtitle_max_chars_per_segment and clip.words:
-                if not audio_anchor:
-                    # Audio-anchored split only: if we can't link audio, do not split.
-                    formatted_text = processor.format_lines(original_text)
-                    new_clips.append(TimelineClip(
-                        id=reserve_id(f"{base_id}_0"),
-                        name=formatted_text,
-                        start=clip.start,
-                        duration=clip.duration,
-                        track=clip.track,
-                        color=clip.color,
-                        clip_type="subtitle",
-                        waveform=[],
-                        offset=clip.offset,
-                        segment_index=clip.segment_index,
-                        speaker=clip.speaker,
-                        words=clip.words,
-                    ))
-                    if formatted_text != original_text:
-                        format_count += 1
-                    continue
-
-                # Split the segment - use source audio coordinates (offset), not timeline coordinates
-                segments = processor.split_segment(
-                    original_text,
-                    clip.offset,  # Source audio start time (VAD-adjusted)
-                    clip.offset + clip.duration,  # Source audio end time
-                    clip.words
-                )
-
-                # Audio-anchored split only: compute internal boundaries from audio.
-                # Keep the current subtitle placement (no snapping).
-                boundaries_timeline = None
-                if len(segments) > 1:
-                    try:
-                        boundaries_timeline = [
-                            audio_anchor.start + (seg['end_time'] - audio_anchor.offset)
-                            for seg in segments[:-1]
-                        ]
-
-                        # Validate boundaries are within the current subtitle clip range
-                        clip_start = clip.start
-                        clip_end = clip.start + clip.duration
-                        for b in boundaries_timeline:
-                            if b <= clip_start + 0.05 or b >= clip_end - 0.05:
-                                boundaries_timeline = None
-                                break
-                    except Exception:
-                        boundaries_timeline = None
-
-                current_start = clip.start
-                clip_end = clip.start + clip.duration
-
-                degenerate_split = False
-
-                for i, seg in enumerate(segments):
-                    # Apply line formatting to each segment
-                    formatted_text = processor.format_lines(seg['text'])
-
-                    if boundaries_timeline is None:
-                        # Can't place segments safely within this clip using audio anchor.
-                        degenerate_split = True
-                        break
-
-                    # Place segments based on audio-derived boundaries, within current clip
-                    if i < len(boundaries_timeline):
-                        current_end = boundaries_timeline[i]
-                    else:
-                        current_end = clip_end
-
-                    timeline_start = current_start
-                    timeline_duration = current_end - current_start
-                    current_start = current_end
-
-                    if timeline_duration <= 0.05:
-                        # Degenerate split, fall back to not splitting this clip
-                        degenerate_split = True
-                        break
-
-                    segment_offset = seg['start_time']
-
-                    new_clip = TimelineClip(
-                        id=reserve_id(f"{base_id}_{i}"),
-                        name=formatted_text,
-                        start=timeline_start,
-                        duration=timeline_duration,
-                        track=clip.track,
-                        color=clip.color,
-                        clip_type="subtitle",
-                        waveform=[],
-                        offset=segment_offset,
-                        segment_index=clip.segment_index,
-                        speaker=clip.speaker,
-                        words=seg['words']
-                    )
-                    new_clips.append(new_clip)
-
-                # If we bailed out due to degenerate boundaries, keep original clip (formatted)
-                if degenerate_split:
-                    # Remove any partial additions for this clip and fall back to formatting only
-                    while new_clips and new_clips[-1].id.startswith(base_id):
-                        new_clips.pop()
-                    formatted_text = processor.format_lines(original_text)
-                    new_clips.append(TimelineClip(
-                        id=reserve_id(f"{base_id}_0"),
-                        name=formatted_text,
-                        start=clip.start,
-                        duration=clip.duration,
-                        track=clip.track,
-                        color=clip.color,
-                        clip_type="subtitle",
-                        waveform=[],
-                        offset=clip.offset,
-                        segment_index=clip.segment_index,
-                        speaker=clip.speaker,
-                        words=clip.words,
-                    ))
-
-                if (not degenerate_split) and len(segments) > 1:
-                    split_count += 1
-            else:
-                # Just apply line formatting
-                formatted_text = processor.format_lines(original_text)
+            # NEW API: 1. 텍스트만으로 분할 포인트 찾기
+            segment_splits = processor.find_split_points(original_text, is_segment=True)
+            
+            if not segment_splits or not clip.words or not audio_anchor:
+                # 분할 불필요 또는 불가능 - 줄바꿈만 적용
+                line_breaks = processor.find_split_points(original_text, is_segment=False)
+                
+                if line_breaks:
+                    # 줄바꿈 적용
+                    lines = []
+                    prev = 0
+                    for lb in line_breaks:
+                        lines.append(original_text[prev:lb].strip())
+                        prev = lb + 1
+                    lines.append(original_text[prev:].strip())
+                    formatted_text = '\n'.join(lines)
+                else:
+                    formatted_text = original_text
+                
                 new_clips.append(TimelineClip(
                     id=reserve_id(f"{base_id}_0"),
                     name=formatted_text,
@@ -1824,6 +1727,168 @@ class MainWindow(QMainWindow):
                 
                 if formatted_text != original_text:
                     format_count += 1
+                continue
+
+            # NEW API: 2. Fuzzy Matching으로 분할 타임스탬프 계산
+            split_timestamps = processor.calculate_split_times(original_text, segment_splits, clip.words)
+            
+            if not split_timestamps or len(split_timestamps) != len(segment_splits):
+                # 타임스탬프 계산 실패 - 줄바꿈만 적용
+                line_breaks = processor.find_split_points(original_text, is_segment=False)
+                formatted_text = original_text
+                if line_breaks:
+                    lines = []
+                    prev = 0
+                    for lb in line_breaks:
+                        lines.append(original_text[prev:lb].strip())
+                        prev = lb + (1 if original_text[lb] == ' ' else 0)
+                    lines.append(original_text[prev:].strip())
+                    formatted_text = '\n'.join(lines)
+                
+                new_clips.append(TimelineClip(
+                    id=reserve_id(f"{base_id}_0"),
+                    name=formatted_text,
+                    start=clip.start,
+                    duration=clip.duration,
+                    track=clip.track,
+                    color=clip.color,
+                    clip_type="subtitle",
+                    waveform=[],
+                    offset=clip.offset,
+                    segment_index=clip.segment_index,
+                    speaker=clip.speaker,
+                    words=clip.words,
+                ))
+                if formatted_text != original_text:
+                    format_count += 1
+                continue
+
+            # 3. 타임라인 좌표로 변환 (오디오 앵커 기준)
+            boundaries_timeline = []
+            for source_time in split_timestamps:
+                timeline_time = audio_anchor.start + (source_time - audio_anchor.offset)
+                boundaries_timeline.append(timeline_time)
+            
+            # Validate boundaries are within the current subtitle clip range
+            clip_start = clip.start
+            clip_end = clip.start + clip.duration
+            valid_boundaries = True
+            for b in boundaries_timeline:
+                if b <= clip_start + 0.05 or b >= clip_end - 0.05:
+                    valid_boundaries = False
+                    break
+            
+            if not valid_boundaries:
+                # 경계가 클립 범위 밖 - 분할 불가능, 줄바꿈만 적용
+                line_breaks = processor.find_split_points(original_text, is_segment=False)
+                formatted_text = original_text
+                if line_breaks:
+                    lines = []
+                    prev = 0
+                    for lb in line_breaks:
+                        lines.append(original_text[prev:lb].strip())
+                        prev = lb + (1 if original_text[lb] == ' ' else 0)
+                    lines.append(original_text[prev:].strip())
+                    formatted_text = '\n'.join(lines)
+                
+                new_clips.append(TimelineClip(
+                    id=reserve_id(f"{base_id}_0"),
+                    name=formatted_text,
+                    start=clip.start,
+                    duration=clip.duration,
+                    track=clip.track,
+                    color=clip.color,
+                    clip_type="subtitle",
+                    waveform=[],
+                    offset=clip.offset,
+                    segment_index=clip.segment_index,
+                    speaker=clip.speaker,
+                    words=clip.words,
+                ))
+                if formatted_text != original_text:
+                    format_count += 1
+                continue
+
+            # 4. 텍스트와 타임스탬프로 세그먼트 생성
+            segments_text = []
+            segments_time = []
+            segments_words = []
+            
+            prev_idx = 0
+            prev_time = clip.start
+            prev_source_time = clip.offset
+            
+            for split_idx, split_source_time, split_timeline_time in zip(
+                segment_splits, split_timestamps, boundaries_timeline
+            ):
+                seg_text = original_text[prev_idx:split_idx].strip()
+                segments_text.append(seg_text)
+                segments_time.append((prev_time, split_timeline_time))
+                
+                # 단어 분할
+                seg_words = [w for w in clip.words 
+                            if hasattr(w, 'start') and hasattr(w, 'end') 
+                            and w.start >= prev_source_time and w.end <= split_source_time]
+                segments_words.append(seg_words)
+                
+                prev_idx = split_idx
+                prev_time = split_timeline_time
+                prev_source_time = split_source_time
+            
+            # 마지막 세그먼트
+            segments_text.append(original_text[prev_idx:].strip())
+            segments_time.append((prev_time, clip_end))
+            seg_words = [w for w in clip.words 
+                        if hasattr(w, 'start') and w.start >= prev_source_time]
+            segments_words.append(seg_words)
+            
+            # 5. 각 세그먼트에 줄바꿈 적용 및 클립 생성
+            for i, (seg_text, (seg_start, seg_end), seg_words) in enumerate(
+                zip(segments_text, segments_time, segments_words)
+            ):
+                # 줄바꿈 처리
+                line_breaks = processor.find_split_points(seg_text, is_segment=False)
+                
+                if line_breaks:
+                    lines = []
+                    prev = 0
+                    for lb in line_breaks:
+                        lines.append(seg_text[prev:lb].strip())
+                        prev = lb + (1 if seg_text[lb] == ' ' else 0)
+                    lines.append(seg_text[prev:].strip())
+                    formatted_text = '\n'.join(lines)
+                else:
+                    formatted_text = seg_text
+                
+                timeline_duration = seg_end - seg_start
+                
+                if timeline_duration <= 0.05:
+                    # 너무 짧은 세그먼트 건너뛰기
+                    continue
+                
+                # offset은 source audio 좌표
+                segment_offset = clip.offset if i == 0 else split_timestamps[i-1]
+                
+                new_clip = TimelineClip(
+                    id=reserve_id(f"{base_id}_{i}"),
+                    name=formatted_text,
+                    start=seg_start,
+                    duration=timeline_duration,
+                    track=clip.track,
+                    color=clip.color,
+                    clip_type="subtitle",
+                    waveform=[],
+                    offset=segment_offset,
+                    segment_index=clip.segment_index,
+                    speaker=clip.speaker,
+                    words=seg_words
+                )
+                new_clips.append(new_clip)
+            
+            if len(segments_text) > 1:
+                split_count += 1
+            if any('\n' in seg for seg in segments_text):
+                format_count += 1
         
         # Replace subtitle clips
         self.timeline_widget.canvas.clips = existing_non_subtitle_clips + new_clips

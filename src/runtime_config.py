@@ -13,11 +13,11 @@ from config import (
     USE_STABLE_TS,
     VAD_PADDING_MS,
     DEFAULT_GAP_SECONDS,
-    SUBTITLE_MAX_CHARS_PER_SEGMENT,
-    SUBTITLE_MAX_CHARS_PER_LINE,
+    SUBTITLE_DEFAULTS,
+    SUBTITLE_LINE_SOFT_CAP,
+    SUBTITLE_LINE_HARD_CAP,
     SUBTITLE_MAX_LINES,
     SUBTITLE_SPLIT_ON_CONJUNCTIONS,
-    SUBTITLE_AUTO_SPLIT,
 )
 
 
@@ -37,11 +37,29 @@ class RuntimeConfig:
     default_gap_seconds: float = DEFAULT_GAP_SECONDS
     
     # Subtitle settings
-    subtitle_max_chars_per_segment: int = SUBTITLE_MAX_CHARS_PER_SEGMENT
-    subtitle_max_chars_per_line: int = SUBTITLE_MAX_CHARS_PER_LINE
+    subtitle_auto_params: bool = True  # True: use language-specific defaults, False: use manual values
+    subtitle_line_soft_cap: int = SUBTITLE_LINE_SOFT_CAP  # Used when auto_params=False
+    subtitle_line_hard_cap: int = SUBTITLE_LINE_HARD_CAP
     subtitle_max_lines: int = SUBTITLE_MAX_LINES
     subtitle_split_on_conjunctions: bool = SUBTITLE_SPLIT_ON_CONJUNCTIONS
-    subtitle_auto_split: bool = SUBTITLE_AUTO_SPLIT
+    
+    def get_subtitle_params(self, language: str = 'ko') -> dict:
+        """Get subtitle parameters - auto (language-based) or manual.
+        
+        Args:
+            language: 'ko' or 'en'
+            
+        Returns:
+            dict with line_soft_cap, line_hard_cap, max_lines
+        """
+        if self.subtitle_auto_params:
+            return SUBTITLE_DEFAULTS.get(language, SUBTITLE_DEFAULTS['ko'])
+        else:
+            return {
+                'line_soft_cap': self.subtitle_line_soft_cap,
+                'line_hard_cap': self.subtitle_line_hard_cap,
+                'max_lines': self.subtitle_max_lines,
+            }
     
     def to_dict(self) -> dict:
         """Convert to dictionary for project save."""
@@ -61,11 +79,11 @@ class RuntimeConfig:
         self.use_stable_ts = USE_STABLE_TS
         self.vad_padding_ms = VAD_PADDING_MS
         self.default_gap_seconds = DEFAULT_GAP_SECONDS
-        self.subtitle_max_chars_per_segment = SUBTITLE_MAX_CHARS_PER_SEGMENT
-        self.subtitle_max_chars_per_line = SUBTITLE_MAX_CHARS_PER_LINE
+        self.subtitle_auto_params = True
+        self.subtitle_line_soft_cap = SUBTITLE_LINE_SOFT_CAP
+        self.subtitle_line_hard_cap = SUBTITLE_LINE_HARD_CAP
         self.subtitle_max_lines = SUBTITLE_MAX_LINES
         self.subtitle_split_on_conjunctions = SUBTITLE_SPLIT_ON_CONJUNCTIONS
-        self.subtitle_auto_split = SUBTITLE_AUTO_SPLIT
 
 
 # Global singleton instance

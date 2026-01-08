@@ -125,33 +125,34 @@ class SettingsWidget(QWidget):
         form_layout = QFormLayout()
         form_layout.setSpacing(8)
         
-        # Max chars per segment
-        self.spin_segment_chars = QSpinBox()
-        self.spin_segment_chars.setRange(20, 100)
-        self.spin_segment_chars.valueChanged.connect(self._on_setting_changed)
-        form_layout.addRow("세그먼트 최대:", self.spin_segment_chars)
+        # Line Soft Cap
+        self.spin_line_soft = QSpinBox()
+        self.spin_line_soft.setRange(10, 30)
+        self.spin_line_soft.valueChanged.connect(self._on_setting_changed)
+        form_layout.addRow("줄 목표(Soft):", self.spin_line_soft)
         
-        # Max chars per line
-        self.spin_line_chars = QSpinBox()
-        self.spin_line_chars.setRange(10, 50)
-        self.spin_line_chars.valueChanged.connect(self._on_setting_changed)
-        form_layout.addRow("라인 최대:", self.spin_line_chars)
+        # Line Hard Cap
+        self.spin_line_hard = QSpinBox()
+        self.spin_line_hard.setRange(15, 40)
+        self.spin_line_hard.valueChanged.connect(self._on_setting_changed)
+        form_layout.addRow("줄 한계(Hard):", self.spin_line_hard)
         
-        # Max lines
+        # Max Lines
         self.spin_max_lines = QSpinBox()
         self.spin_max_lines.setRange(1, 4)
         self.spin_max_lines.valueChanged.connect(self._on_setting_changed)
         form_layout.addRow("최대 줄 수:", self.spin_max_lines)
         
         # Split on conjunctions
-        self.check_split_conj = QCheckBox("접속사 기준 분할 (~고, ~며)")
+        self.check_split_conj = QCheckBox("형태소 분석 사용 (~고, ~며)")
         self.check_split_conj.stateChanged.connect(self._on_setting_changed)
         form_layout.addRow("", self.check_split_conj)
         
-        # Auto split
-        self.check_auto_split = QCheckBox("긴 자막 자동 분할")
-        self.check_auto_split.stateChanged.connect(self._on_setting_changed)
-        form_layout.addRow("", self.check_auto_split)
+        # Auto params (language-specific defaults)
+        self.check_auto_params = QCheckBox("언어별 기본값 사용 (자동)")
+        self.check_auto_params.setToolTip("체크 시: 한국어/영어 기본값 자동 적용\n해제 시: 위 설정값 사용")
+        self.check_auto_params.stateChanged.connect(self._on_auto_params_changed)
+        form_layout.addRow("", self.check_auto_params)
         
         subtitle_layout.addLayout(form_layout)
         layout.addWidget(self.subtitle_group)
@@ -174,11 +175,14 @@ class SettingsWidget(QWidget):
         self.spin_gap.setValue(self._config.default_gap_seconds)
         
         # Subtitle
-        self.spin_segment_chars.setValue(self._config.subtitle_max_chars_per_segment)
-        self.spin_line_chars.setValue(self._config.subtitle_max_chars_per_line)
+        self.spin_line_soft.setValue(self._config.subtitle_line_soft_cap)
+        self.spin_line_hard.setValue(self._config.subtitle_line_hard_cap)
         self.spin_max_lines.setValue(self._config.subtitle_max_lines)
         self.check_split_conj.setChecked(self._config.subtitle_split_on_conjunctions)
-        self.check_auto_split.setChecked(self._config.subtitle_auto_split)
+        self.check_auto_params.setChecked(self._config.subtitle_auto_params)
+        
+        # Update enabled state based on auto_params
+        self._update_manual_controls_enabled()
         
         self._block_signals(False)
     
@@ -187,11 +191,23 @@ class SettingsWidget(QWidget):
         controls = [
             self.combo_model, self.check_stable_ts,
             self.spin_vad_padding, self.spin_gap,
-            self.spin_segment_chars, self.spin_line_chars, self.spin_max_lines,
-            self.check_split_conj, self.check_auto_split
+            self.spin_line_soft, self.spin_line_hard, self.spin_max_lines,
+            self.check_split_conj, self.check_auto_params
         ]
         for ctrl in controls:
             ctrl.blockSignals(block)
+    
+    def _on_auto_params_changed(self):
+        """Handle auto_params toggle - enable/disable manual controls."""
+        self._update_manual_controls_enabled()
+        self._on_setting_changed()
+    
+    def _update_manual_controls_enabled(self):
+        """Enable/disable manual subtitle controls based on auto_params."""
+        is_manual = not self.check_auto_params.isChecked()
+        self.spin_line_soft.setEnabled(is_manual)
+        self.spin_line_hard.setEnabled(is_manual)
+        self.spin_max_lines.setEnabled(is_manual)
     
     def _on_setting_changed(self):
         """Handle any setting change - update config immediately."""
@@ -209,11 +225,11 @@ class SettingsWidget(QWidget):
         self._config.default_gap_seconds = self.spin_gap.value()
         
         # Subtitle
-        self._config.subtitle_max_chars_per_segment = self.spin_segment_chars.value()
-        self._config.subtitle_max_chars_per_line = self.spin_line_chars.value()
+        self._config.subtitle_line_soft_cap = self.spin_line_soft.value()
+        self._config.subtitle_line_hard_cap = self.spin_line_hard.value()
         self._config.subtitle_max_lines = self.spin_max_lines.value()
         self._config.subtitle_split_on_conjunctions = self.check_split_conj.isChecked()
-        self._config.subtitle_auto_split = self.check_auto_split.isChecked()
+        self._config.subtitle_auto_params = self.check_auto_params.isChecked()
     
     def reset_to_defaults(self):
         """Reset all settings to defaults."""

@@ -22,12 +22,16 @@ else:
 DEFAULT_GAP_SECONDS = 0.5  # Gap between clips
 VAD_PADDING_MS = 150  # Padding for VAD trimming (increased for better margins)
 
-# Subtitle settings
-SUBTITLE_MAX_CHARS_PER_SEGMENT = 40  # Split segments longer than this
-SUBTITLE_MAX_CHARS_PER_LINE = 20     # Line break after this many chars
-SUBTITLE_MAX_LINES = 2               # Max lines per subtitle
+# Subtitle settings - Language-specific defaults
+SUBTITLE_DEFAULTS = {
+    'ko': {'line_soft_cap': 18, 'line_hard_cap': 25, 'max_lines': 2},
+    'en': {'line_soft_cap': 35, 'line_hard_cap': 42, 'max_lines': 2},
+}
+# Fallback for manual mode or unknown language
+SUBTITLE_LINE_SOFT_CAP = 18
+SUBTITLE_LINE_HARD_CAP = 25
+SUBTITLE_MAX_LINES = 2
 SUBTITLE_SPLIT_ON_CONJUNCTIONS = True
-SUBTITLE_AUTO_SPLIT = True           # Auto-split long segments on processing
 
 # Video settings
 VIDEO_WIDTH = 1920
