@@ -121,7 +121,7 @@ class VADProcessor:
         original_end: float,
         padding_ms: int | None = None,
         prev_end_time: float | None = None
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, float]:
         """Get refined boundaries for an audio segment
         
         Useful when you have approximate boundaries from Whisper
@@ -132,10 +132,14 @@ class VADProcessor:
             original_start: Original start time in seconds
             original_end: Original end time in seconds
             padding_ms: Override default padding (optional)
-            prev_end_time: End time of previous segment to avoid overlap (optional)
+            prev_end_time: Raw VAD end time of previous segment (without padding)
+                          to avoid overlap in analysis
             
         Returns:
-            Tuple of refined (start_seconds, end_seconds)
+            Tuple of (refined_start, refined_end, raw_voice_end):
+            - refined_start: Start time with padding applied (seconds)
+            - refined_end: End time with padding applied (seconds)
+            - raw_voice_end: Exact VAD voice end time without padding (seconds)
         """
         if padding_ms is None:
             padding_ms = self.padding_ms
@@ -144,7 +148,7 @@ class VADProcessor:
         buffer_ms = 300  # Reduced from 500ms
         
         if prev_end_time is not None:
-            # Start analysis from previous segment's end (with small gap)
+            # Start analysis from previous segment's raw voice end (with small gap)
             safe_start_ms = int(prev_end_time * 1000) + 50  # 50ms gap
             extract_start = max(safe_start_ms, int(original_start * 1000) - buffer_ms)
         else:
@@ -155,22 +159,25 @@ class VADProcessor:
         
         # Make sure we have valid range
         if extract_start >= extract_end:
-            return original_start, original_end
+            return original_start, original_end, original_end
         
         segment = audio[extract_start:extract_end]
         voice_start_ms, voice_end_ms = self.get_voice_boundaries(segment)
         
+        # Store raw voice end before applying padding
+        raw_voice_end = (extract_start + voice_end_ms) / 1000.0
+        
         # Apply padding
-        voice_start_ms = max(0, voice_start_ms - padding_ms)
-        voice_end_ms = min(len(segment), voice_end_ms + padding_ms)
+        padded_start_ms = max(0, voice_start_ms - padding_ms)
+        padded_end_ms = min(len(segment), voice_end_ms + padding_ms)
         
         # Convert back to absolute times
-        refined_start = (extract_start + voice_start_ms) / 1000.0
-        refined_end = (extract_start + voice_end_ms) / 1000.0
+        refined_start = (extract_start + padded_start_ms) / 1000.0
+        refined_end = (extract_start + padded_end_ms) / 1000.0
         
         # Additional safety: don't start before previous segment end
         if prev_end_time is not None:
             refined_start = max(refined_start, prev_end_time + 0.02)  # 20ms gap minimum
         
-        return refined_start, refined_end
+        return refined_start, refined_end, raw_voice_end
 

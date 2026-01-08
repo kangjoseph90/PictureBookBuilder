@@ -234,7 +234,7 @@ class ProcessingThread(QThread):
                     
                     # Refine boundaries using VAD with previous segment constraint
                     try:
-                        refined_start, refined_end = vad.trim_segment_boundaries(
+                        refined_start, refined_end, raw_voice_end = vad.trim_segment_boundaries(
                             audio,
                             segment.start_time,
                             segment.end_time,
@@ -245,8 +245,9 @@ class ProcessingThread(QThread):
                         segment.start_time = refined_start
                         segment.end_time = refined_end
                         
-                        # Store this segment's end for next iteration
-                        prev_end_by_speaker[speaker] = refined_end
+                        # Store raw voice end (without padding) for next iteration
+                        # This allows next segment's analysis to start closer to actual voice end
+                        prev_end_by_speaker[speaker] = raw_voice_end
                     except Exception as e:
                         # If VAD fails, keep original boundaries
                         print(f"VAD refinement failed for segment {i}: {e}")
