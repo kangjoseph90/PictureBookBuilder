@@ -84,14 +84,22 @@ class SubtitleProcessor:
         self.segment_soft_cap = int(line_soft_cap * (max_lines - 0.5))
         self.segment_hard_cap = (line_soft_cap * (max_lines - 1)) + line_hard_cap
         
-        # 형태소 분석기 초기화 (한국어 - Kiwi)
-        self.kiwi = None
-        if KIWI_AVAILABLE:
-            try:
-                self.kiwi = Kiwi()
-            except Exception as e:
-                print(f"Warning: Kiwi initialization failed: {e}")
-                self.kiwi = None
+        # 형태소 분석기 (한국어 - Kiwi) - lazy initialization
+        self._kiwi = None
+        self._kiwi_initialized = False
+    
+    @property
+    def kiwi(self):
+        """Lazy-load Kiwi only when needed for Korean text processing"""
+        if not self._kiwi_initialized:
+            self._kiwi_initialized = True
+            if KIWI_AVAILABLE:
+                try:
+                    self._kiwi = Kiwi()
+                except Exception as e:
+                    print(f"Warning: Kiwi initialization failed: {e}")
+                    self._kiwi = None
+        return self._kiwi
     
     def detect_language(self, text: str) -> str:
         """Detect if text is primarily Korean or English"""
