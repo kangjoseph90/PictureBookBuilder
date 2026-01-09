@@ -159,7 +159,7 @@ class VADProcessor:
             padding_ms = self.padding_ms
         
         # Calculate safe start point - don't go before previous segment's end
-        buffer_ms = 300  # Reduced from 500ms
+        buffer_ms = 500  # Buffer for VAD analysis window
         
         if prev_end_time is not None:
             # Start analysis from previous segment's raw voice end (with small gap)

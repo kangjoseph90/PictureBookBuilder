@@ -22,7 +22,7 @@ else:
 
 # Audio settings
 DEFAULT_GAP_SECONDS = 0.5  # Gap between clips
-VAD_PADDING_MS = 150  # Padding for VAD trimming (increased for better margins)
+VAD_PADDING_MS = 200  # Padding for VAD trimming (increased for better margins)
 
 # Subtitle settings - Language-specific defaults
 SUBTITLE_DEFAULTS = {
