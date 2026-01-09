@@ -130,6 +130,9 @@ class TimelineCanvas(QWidget):
         self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
         self.waveform_extractor = None  # Will be set by main_window
         
+        # Waveform rendering optimization
+        self._waveform_path_cache: dict[str, QPainterPath] = {}  # Cache QPainterPath for each clip
+        
         # Throttling for mouse move events (to reduce CPU usage during fast dragging)
         self._update_throttle_timer = QTimer(self)
         self._update_throttle_timer.setSingleShot(True)
@@ -226,6 +229,10 @@ class TimelineCanvas(QWidget):
                             
                             # Generate and update waveform
                             clip.waveform = self.waveform_extractor(segment)
+                            
+                            # Invalidate cached path for this clip
+                            if clip_id in self._waveform_path_cache:
+                                del self._waveform_path_cache[clip_id]
                         except Exception as e:
                             print(f"Error updating waveform for clip {clip_id}: {e}")
                 break
@@ -365,8 +372,18 @@ class TimelineCanvas(QWidget):
         # Draw time grid
         self._draw_grid(painter)
         
-        # Draw clips
+        # Calculate visible time range for culling
+        visible_start = self.x_to_time(0)
+        visible_end = self.x_to_time(self.width())
+        
+        # Draw clips (only visible ones)
         for clip in self.clips:
+            # Cull clips outside visible range
+            if clip.start + clip.duration < visible_start:
+                continue  # Clip is completely to the left
+            if clip.start > visible_end:
+                continue  # Clip is completely to the right
+            
             self._draw_clip(painter, clip)
         
         # Draw playhead (on top of everything)
@@ -556,53 +573,71 @@ class TimelineCanvas(QWidget):
 
     def _draw_waveform(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
-        """Draw the waveform visualization for a clip - spans entire clip"""
+        """Draw the waveform visualization for a clip - optimized with caching"""
         waveform = clip.waveform
         num_samples = len(waveform)
         
-        if num_samples == 0 or width < 2:
+        # Skip very small clips (not worth rendering waveform)
+        if num_samples == 0 or width < 10:
             return
         
-        # Center waveform in track (reduced top offset for better centering)
+        # Center waveform in track
         wave_y = y + 4
         wave_height = height - 6
         center_y = wave_y + wave_height / 2
         
-        # Create path for waveform
-        path = QPainterPath()
+        # Check if we have a cached path for this clip
+        # Cache key must include offset and duration to handle resize correctly
+        cache_key = f"{clip.id}_{int(width)}_{int(height)}_{clip.offset:.2f}_{clip.duration:.2f}"
         
-        # Map waveform samples to pixel width
-        points_top = []
-        points_bottom = []
-        
-        for px in range(int(width)):
-            # Calculate which sample corresponds to this pixel
-            sample_idx = int((px / width) * num_samples)
-            sample_idx = min(sample_idx, num_samples - 1)
+        if cache_key in self._waveform_path_cache:
+            # Use cached path
+            path = self._waveform_path_cache[cache_key]
+        else:
+            # Generate new path
+            path = QPainterPath()
             
-            # Get amplitude value
-            amp = waveform[sample_idx] if sample_idx < num_samples else 0
+            # Adaptive sampling: limit samples to pixel width
+            # This prevents unnecessary computation for zoomed-out views
+            max_samples = min(int(width), num_samples)
+            points_top = []
+            points_bottom = []
             
-            amp_height = amp * (wave_height / 2) * 0.9
+            for px in range(max_samples):
+                # Calculate which sample corresponds to this pixel
+                sample_idx = int((px / max_samples) * num_samples)
+                sample_idx = min(sample_idx, num_samples - 1)
+                
+                # Get amplitude value
+                amp = waveform[sample_idx]
+                amp_height = amp * (wave_height / 2) * 0.9
+                
+                # Scale px to actual width for proper positioning
+                actual_x = (px / max_samples) * width
+                points_top.append((actual_x, center_y - amp_height))
+                points_bottom.append((actual_x, center_y + amp_height))
             
-            points_top.append((x + px, center_y - amp_height))
-            points_bottom.append((x + px, center_y + amp_height))
+            if len(points_top) < 2:
+                return
+            
+            # Build path (relative coordinates, will translate when drawing)
+            path.moveTo(points_top[0][0], points_top[0][1])
+            for px_x, px_y in points_top[1:]:
+                path.lineTo(px_x, px_y)
+            
+            # Continue to bottom in reverse
+            for px_x, px_y in reversed(points_bottom):
+                path.lineTo(px_x, px_y)
+            
+            path.closeSubpath()
+            
+            # Cache the path
+            self._waveform_path_cache[cache_key] = path
         
-        if len(points_top) < 2:
-            return
+        # Draw the cached or newly created path
+        painter.save()
+        painter.translate(x, 0)  # Translate to clip position
         
-        # Build path
-        path.moveTo(points_top[0][0], points_top[0][1])
-        for px_x, px_y in points_top[1:]:
-            path.lineTo(px_x, px_y)
-        
-        # Continue to bottom in reverse
-        for px_x, px_y in reversed(points_bottom):
-            path.lineTo(px_x, px_y)
-        
-        path.closeSubpath()
-        
-        # Draw filled waveform
         wave_color = QColor(clip.color.lighter(120))
         wave_color.setAlpha(200)
         painter.setBrush(QBrush(wave_color))
@@ -611,7 +646,9 @@ class TimelineCanvas(QWidget):
         
         # Draw center line
         painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        painter.drawLine(int(x), int(center_y), int(x + width), int(center_y))
+        painter.drawLine(0, int(center_y), int(width), int(center_y))
+        
+        painter.restore()
     
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press"""
