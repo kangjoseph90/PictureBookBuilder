@@ -8,6 +8,23 @@ from pathlib import Path
 from config import WHISPER_DEVICE, WHISPER_COMPUTE_TYPE
 from runtime_config import get_config
 
+# Check backend availability
+try:
+    from faster_whisper import WhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    print("Warning: faster-whisper module not found.")
+    FASTER_WHISPER_AVAILABLE = False
+    WhisperModel = None
+
+try:
+    import stable_whisper
+    STABLE_WHISPER_AVAILABLE = True
+except ImportError:
+    STABLE_WHISPER_AVAILABLE = False
+    stable_whisper = None
+
+
 
 @dataclass
 class WordSegment:
@@ -52,10 +69,12 @@ class Transcriber:
         print(f"Transcriber: model={model_size}, use_stable_ts={use_stable_ts}")
         
         if self.use_stable_ts:
-            import stable_whisper
+            if not STABLE_WHISPER_AVAILABLE:
+                raise ImportError("stable-whisper is required but not installed. Run: pip install stable-ts")
             self.model = stable_whisper.load_model(model_size, device=device)
         else:
-            from faster_whisper import WhisperModel
+            if not FASTER_WHISPER_AVAILABLE:
+                raise ImportError("faster-whisper is required but not installed. Run: pip install faster-whisper")
             self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
     
     def transcribe(

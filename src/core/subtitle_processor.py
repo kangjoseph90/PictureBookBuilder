@@ -10,6 +10,7 @@ try:
     from kiwipiepy import Kiwi
     KIWI_AVAILABLE = True
 except ImportError:
+    print("Warning: kiwipiepy module not found. Korean morpheme analysis will be disabled.")
     KIWI_AVAILABLE = False
 
 

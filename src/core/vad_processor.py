@@ -3,11 +3,25 @@ VAD Processor - Voice Activity Detection for precise audio trimming
 """
 from pathlib import Path
 import numpy as np
-import torch
 
-from pydub import AudioSegment
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    print("Warning: torch module not found. VAD processing will be disabled.")
+    TORCH_AVAILABLE = False
+    torch = None
+
+try:
+    from pydub import AudioSegment
+    PYDUB_AVAILABLE = True
+except ImportError:
+    print("Warning: pydub module not found. Audio processing will be disabled.")
+    PYDUB_AVAILABLE = False
+    AudioSegment = None
 
 from runtime_config import get_config
+
 
 
 class VADProcessor:

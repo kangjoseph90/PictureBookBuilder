@@ -4,7 +4,13 @@ Aligner - Match script dialogue to transcribed audio segments
 from dataclasses import dataclass
 import re
 
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    print("Warning: rapidfuzz module not found. Text alignment will be disabled.")
+    RAPIDFUZZ_AVAILABLE = False
+    fuzz = None
 
 from .script_parser import DialogueLine
 from .transcriber import TranscriptionResult, WordSegment
