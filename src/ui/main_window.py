@@ -155,6 +155,10 @@ class ProcessingThread(QThread):
         self.image_folder = image_folder
     
     def run(self):
+        # Store model references for cleanup
+        self._transcriber = None
+        self._vad = None
+        
         try:
             from core.script_parser import ScriptParser
             from core.transcriber import Transcriber
@@ -186,7 +190,7 @@ class ProcessingThread(QThread):
             
             # Step 3: Transcribe audio files
             self.progress.emit(20, "오디오 변환 중 (Whisper)...")
-            transcriber = Transcriber()
+            self._transcriber = Transcriber()
             transcriptions = {}
             
             total_speakers = len(self.speaker_audio_map)
@@ -200,7 +204,7 @@ class ProcessingThread(QThread):
                     if whisper_lang == "auto":
                         whisper_lang = None
                         
-                    transcriptions[speaker] = transcriber.transcribe(
+                    transcriptions[speaker] = self._transcriber.transcribe(
                         audio_path, 
                         language=whisper_lang,
                         initial_prompt=initial_prompt
@@ -213,7 +217,7 @@ class ProcessingThread(QThread):
 
             # Step 5: VAD Refinement - refine segment boundaries with Silero VAD
             self.progress.emit(60, "VAD로 경계 보정 중...")
-            vad = VADProcessor()
+            self._vad = VADProcessor()
             
             # Load speaker audio files for VAD
             speaker_audio: dict[str, AudioSegment] = {}
@@ -240,7 +244,7 @@ class ProcessingThread(QThread):
                     
                     # Refine boundaries using VAD with previous segment constraint
                     try:
-                        refined_start, refined_end, raw_voice_end = vad.trim_segment_boundaries(
+                        refined_start, refined_end, raw_voice_end = self._vad.trim_segment_boundaries(
                             audio,
                             segment.start_time,
                             segment.end_time,
@@ -279,7 +283,7 @@ class ProcessingThread(QThread):
         
         finally:
             # Cleanup: Release models from GPU memory
-            self._cleanup_models(locals())
+            self._cleanup_models()
     
     def _build_whisper_prompt(self, speakers: list[str], script_text: str, max_length: int = 200) -> str:
         """Build initial prompt for Whisper from speakers and script keywords
@@ -314,16 +318,24 @@ class ProcessingThread(QThread):
         
         return result
     
-    def _cleanup_models(self, local_vars: dict):
+    def _cleanup_models(self):
         """Clean up models and release GPU memory after processing"""
         import gc
         
         try:
-            # Delete model references
-            if 'transcriber' in local_vars and local_vars['transcriber'] is not None:
-                del local_vars['transcriber']
-            if 'vad' in local_vars and local_vars['vad'] is not None:
-                del local_vars['vad']
+            # Delete Whisper model
+            if hasattr(self, '_transcriber') and self._transcriber is not None:
+                if hasattr(self._transcriber, 'model'):
+                    del self._transcriber.model
+                del self._transcriber
+                self._transcriber = None
+            
+            # Delete VAD model
+            if hasattr(self, '_vad') and self._vad is not None:
+                if hasattr(self._vad, 'model'):
+                    del self._vad.model
+                del self._vad
+                self._vad = None
             
             # Force garbage collection
             gc.collect()
