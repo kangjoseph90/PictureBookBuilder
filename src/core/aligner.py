@@ -44,107 +44,91 @@ class Aligner:
     ) -> list[WordSegment]:
         """
         Whisper words를 스크립트 텍스트 단어 경계에 맞게 재구성
-        Anchor 기반 2-pass 알고리즘 사용
+        difflib.SequenceMatcher(LCS 기반)를 사용하여 최적 정렬 수행
         """
         if not whisper_words:
             return []
         
+        # 1. Prepare word lists
         script_words_raw = script_text.split()
-        script_words = [self.normalize_text(w) for w in script_words_raw]
-        paired = [(raw, norm) for raw, norm in zip(script_words_raw, script_words) if norm]
-        if not paired:
-            return whisper_words
-        script_words_raw, script_words = zip(*paired)
-        script_words_raw, script_words = list(script_words_raw), list(script_words)
+        script_words_norm = [self.normalize_text(w) for w in script_words_raw]
         
-
-        # === PASS 1: Find anchors (high-confidence 1:1 matches) ===
-        anchors = []  # List of (script_idx, whisper_idx, score)
+        whisper_words_norm = [self.normalize_text(w.text) for w in whisper_words]
         
-        for s_idx, script_word in enumerate(script_words):
-            best_w_idx = -1
-            best_score = 0
+        # 2. Find optimal alignment using SequenceMatcher
+        # This finds the Longest Common Subsequence of words
+        import difflib
+        matcher = difflib.SequenceMatcher(None, script_words_norm, whisper_words_norm)
+        
+        result = []
+        
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            # i1, i2: indices in script_words
+            # j1, j2: indices in whisper_words
             
-            for w_idx, whisper_word in enumerate(whisper_words):
-                whisper_norm = self.normalize_text(whisper_word.text)
-                score = fuzz.ratio(script_word, whisper_norm)
+            script_chunk = script_words_raw[i1:i2]
+            
+            if not script_chunk:
+                continue
                 
-                if score >= 85 and score > best_score:
-                    # Check ordering constraint: anchors must be in order
-                    if not anchors or w_idx > anchors[-1][1]:
-                        best_score = score
-                        best_w_idx = w_idx
+            if tag == 'equal':
+                # Perfect match: 1:1 mapping (or N:N if identical sequence)
+                # In 'equal' block, lengths are same.
+                for k in range(i2 - i1):
+                    s_word = script_words_raw[i1 + k]
+                    w_word = whisper_words[j1 + k]
+                    result.append(WordSegment(
+                        text=s_word,
+                        start=w_word.start,
+                        end=w_word.end
+                    ))
             
-            if best_w_idx >= 0:
-                anchors.append((s_idx, best_w_idx, best_score))
-        
-
-        
-        # === PASS 2: Fill gaps between anchors AND add anchor words ===
-        result: list[WordSegment] = []
-        
-        # Add virtual anchors at boundaries (not real words)
-        anchors_with_bounds = [(-1, -1, 0)] + anchors + [(len(script_words), len(whisper_words), 0)]
-        
-        for i in range(len(anchors_with_bounds) - 1):
-            prev_anchor = anchors_with_bounds[i]
-            next_anchor = anchors_with_bounds[i + 1]
-            
-            # Script words in this gap (exclusive of anchors)
-            s_start = prev_anchor[0] + 1
-            s_end = next_anchor[0]
-            
-            # Whisper words in this gap (exclusive of anchors)
-            w_start = prev_anchor[1] + 1
-            w_end = next_anchor[1]
-            
-            gap_script = list(range(s_start, s_end))
-            gap_whisper = list(range(w_start, w_end))
-            
-            # Process gap (words between anchors)
-            if gap_script:
-                if not gap_whisper:
-                    # No whisper words for these script words - use ratio from neighbors
-                    if result:
-                        last_end = result[-1].end
-                    else:
-                        last_end = whisper_words[0].start if whisper_words else 0.0
-                    
-                    if w_end < len(whisper_words):
-                        next_start = whisper_words[w_end].start
-                    else:
-                        next_start = last_end + 1.0
-                    
-                    total_duration = next_start - last_end
-                    total_chars = sum(len(script_words_raw[si]) for si in gap_script)
-                    current_time = last_end
-                    
-                    for si in gap_script:
-                        word_dur = total_duration * len(script_words_raw[si]) / total_chars if total_chars > 0 else 0.1
-                        result.append(WordSegment(
-                            text=script_words_raw[si],
-                            start=current_time,
-                            end=current_time + word_dur
-                        ))
-                        current_time += word_dur
+            elif tag == 'replace':
+                # Script words match Whisper words but texts differ (e.g. typos, fuzzy)
+                # Distribute Whisper timestamps to Script words
+                whisper_chunk = whisper_words[j1:j2]
+                segments = self._distribute_words(script_chunk, [], whisper_chunk)
+                result.extend(segments)
+                
+            elif tag == 'delete':
+                # Script words exist but NO corresponding Whisper words (Gap)
+                # Need to interpolate time from surrounding segments
+                
+                # Find start time (end of last result or start of global audio)
+                if result:
+                    start_time = result[-1].end
                 else:
-                    # Distribute script words among whisper words
-                    gap_whisper_words = [whisper_words[wi] for wi in gap_whisper]
-                    gap_script_raw = [script_words_raw[si] for si in gap_script]
-                    gap_script_norm = [script_words[si] for si in gap_script]
+                    start_time = whisper_words[0].start if whisper_words else 0.0
+                
+                # Find end time (start of next Whisper match)
+                if j2 < len(whisper_words):
+                    end_time = whisper_words[j2].start
+                else:
+                    # If this is the trailing end, use end of last Whisper word
+                    end_time = whisper_words[-1].end if whisper_words else start_time + 1.0
+                
+                # Linearly interpolate
+                duration = end_time - start_time
+                total_len = sum(len(w) for w in script_chunk)
+                current_time = start_time
+                
+                for word in script_chunk:
+                    # Minimum duration 0.05s to avoid zero-length
+                    word_dur = max(0.05, duration * (len(word) / total_len)) if total_len > 0 else duration / len(script_chunk)
+                    # Constraint checking to not exceed end_time strictly if possible, 
+                    # but smooth flow is more important.
                     
-                    segments = self._distribute_words(gap_script_raw, gap_script_norm, gap_whisper_words)
-                    result.extend(segments)
-            
-            # Add the anchor word itself (unless it's the virtual end boundary)
-            if next_anchor[0] < len(script_words) and next_anchor[1] < len(whisper_words):
-                anchor_s_idx = next_anchor[0]
-                anchor_w_idx = next_anchor[1]
-                result.append(WordSegment(
-                    text=script_words_raw[anchor_s_idx],
-                    start=whisper_words[anchor_w_idx].start,
-                    end=whisper_words[anchor_w_idx].end
-                ))
+                    result.append(WordSegment(
+                        text=word,
+                        start=current_time,
+                        end=current_time + word_dur
+                    ))
+                    current_time += word_dur
+                    
+            elif tag == 'insert':
+                # Whisper words extra (not in script). Ignore them, 
+                # but they effectively push the 'end_time' for the next 'delete' block if any.
+                pass
         
         return result
     
