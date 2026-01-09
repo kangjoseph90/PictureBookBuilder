@@ -9,7 +9,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QSplitter, QTextEdit, QSlider, QSpinBox, QProgressBar,
+    QSplitter, QTextEdit, QSlider, QSpinBox, QProgressBar, QDialog,
     QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QToolBar, QStyle, QMenu, QStatusBar, QSizePolicy,
     QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView
@@ -78,6 +78,81 @@ class ImageGridDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         # Reduced height (110 -> 100) for tighter spacing
         return QSize(100, 100)
+
+
+class ProgressDialog(QDialog):
+    """Processing progress dialog with refined UI matching settings style"""
+    
+    cancelled = pyqtSignal()
+    
+    def __init__(self, parent=None, title="오디오 처리"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(400)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog | 
+            Qt.WindowType.CustomizeWindowHint | 
+            Qt.WindowType.WindowTitleHint
+        )
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 20)
+        layout.setSpacing(15)
+        
+        # Status label with slightly better font/color
+        self.status_label = QLabel("준비 중...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("font-weight: bold; color: #CCCCCC;")
+        layout.addWidget(self.status_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(18)
+        layout.addWidget(self.progress_bar)
+        
+        # Spacer
+        layout.addSpacing(5)
+        
+        # Cancel button centered
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.setFixedWidth(100)
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        self._is_cancelled = False
+        
+        # Auto-adjust height
+        self.adjustSize()
+        self.setFixedSize(self.width(), self.sizeHint().height())
+    
+    def update_progress(self, percent: int, message: str):
+        """Update progress bar and status message"""
+        self.progress_bar.setValue(percent)
+        self.status_label.setText(message)
+    
+    def _on_cancel(self):
+        """Handle cancel button click"""
+        self._is_cancelled = True
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("취소 중...")
+        self.status_label.setText("취소 중... 잠시 기다려주세요")
+        self.cancelled.emit()
+    
+    def closeEvent(self, event):
+        """Prevent closing dialog by X button during processing"""
+        if not self._is_cancelled:
+            event.ignore()
+        else:
+            event.accept()
 
 
 class RenderThread(QThread):
@@ -153,6 +228,18 @@ class ProcessingThread(QThread):
         self.script_path = script_path
         self.speaker_audio_map = speaker_audio_map  # Now directly passed
         self.image_folder = image_folder
+        self._cancelled = False
+    
+    def cancel(self):
+        """Request cancellation of the processing"""
+        self._cancelled = True
+    
+    def _check_cancelled(self) -> bool:
+        """Check if cancellation was requested and emit finished signal if so"""
+        if self._cancelled:
+            self.finished.emit(False, "사용자가 취소함", None)
+            return True
+        return False
     
     def run(self):
         # Store model references for cleanup
@@ -188,9 +275,18 @@ class ProcessingThread(QThread):
             initial_prompt = self._build_whisper_prompt(speakers, script_text)
             print(f"Whisper initial prompt: {initial_prompt}")
             
+            # Check for cancellation before heavy processing
+            if self._check_cancelled():
+                return
+            
             # Step 3: Transcribe audio files
-            self.progress.emit(20, "오디오 변환 중 (Whisper)...")
+            self.progress.emit(20, "Whisper 모델 로딩 중...")
             self._transcriber = Transcriber()
+            
+            # Check for cancellation after model loading
+            if self._check_cancelled():
+                return
+            
             transcriptions = {}
             
             total_speakers = len(self.speaker_audio_map)
@@ -209,11 +305,19 @@ class ProcessingThread(QThread):
                         language=whisper_lang,
                         initial_prompt=initial_prompt
                     )
+                    
+                    # Check for cancellation after each speaker
+                    if self._check_cancelled():
+                        return
 
             # Step 4: Align dialogues
             self.progress.emit(50, "대사 정렬 중...")
             aligner = Aligner()
             aligned = aligner.align_all(dialogues, transcriptions)
+            
+            # Check for cancellation before VAD
+            if self._check_cancelled():
+                return
 
             # Step 5: VAD Refinement - refine segment boundaries with Silero VAD
             self.progress.emit(60, "VAD로 경계 보정 중...")
@@ -933,25 +1037,40 @@ class MainWindow(QMainWindow):
         self.action_process.setEnabled(ready)
     
     def _start_processing(self):
-        """Start the processing thread"""
+        """Start the processing thread with progress dialog"""
         self.action_process.setEnabled(False)
-        self.statusBar().showMessage("처리 중...")
+        
+        # Create and show progress dialog
+        self.progress_dialog = ProgressDialog(self, "오디오 처리 중...")
         
         self.processing_thread = ProcessingThread(
             self.script_path,
             self.speaker_audio_map.copy(),
             self.image_folder or ""
         )
+        
+        # Connect signals
         self.processing_thread.progress.connect(self._on_progress)
         self.processing_thread.finished.connect(self._on_processing_finished)
+        self.progress_dialog.cancelled.connect(self.processing_thread.cancel)
+        
         self.processing_thread.start()
+        self.progress_dialog.show()
     
     def _on_progress(self, percent: int, message: str):
         """Handle progress updates"""
         self.statusBar().showMessage(f"{message} ({percent}%)")
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.update_progress(percent, message)
     
     def _on_processing_finished(self, success: bool, message: str, result: Optional[dict]):
         """Handle processing completion"""
+        # Close progress dialog
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog._is_cancelled = True  # Allow closing
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
         self.action_process.setEnabled(True)
         self.result_data = result
         
@@ -973,8 +1092,9 @@ class MainWindow(QMainWindow):
             
             QMessageBox.information(self, "완료", message)
         else:
-            self.statusBar().showMessage("오류 발생")
-            QMessageBox.critical(self, "오류", message)
+            self.statusBar().showMessage("취소됨" if "취소" in message else "오류 발생")
+            if "취소" not in message:
+                QMessageBox.critical(self, "오류", message)
     
     def _update_timeline(self, result: dict):
         """Update the timeline with aligned segments and waveforms"""
