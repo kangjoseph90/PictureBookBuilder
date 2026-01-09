@@ -11,6 +11,8 @@ from typing import Optional
 from config import (
     WHISPER_MODEL,
     USE_STABLE_TS,
+    USE_INITIAL_PROMPT,
+    WHISPER_LANGUAGE,
     VAD_PADDING_MS,
     DEFAULT_GAP_SECONDS,
     SUBTITLE_DEFAULTS,
@@ -30,8 +32,9 @@ class RuntimeConfig:
     """
     # Whisper settings
     whisper_model: str = WHISPER_MODEL
-    whisper_language: str = "auto"  # 'ko', 'en', or 'auto'
+    whisper_language: str = WHISPER_LANGUAGE  # 'ko', 'en', or 'auto'
     use_stable_ts: bool = USE_STABLE_TS
+    use_initial_prompt: bool = USE_INITIAL_PROMPT  # 스크립트 기반 initial prompt 사용 여부
     
     # Audio settings
     vad_padding_ms: int = VAD_PADDING_MS
@@ -77,8 +80,9 @@ class RuntimeConfig:
     def reset_to_defaults(self):
         """Reset all settings to default values from config.py."""
         self.whisper_model = WHISPER_MODEL
-        self.whisper_language = "auto"
+        self.whisper_language = WHISPER_LANGUAGE
         self.use_stable_ts = USE_STABLE_TS
+        self.use_initial_prompt = USE_INITIAL_PROMPT
         self.vad_padding_ms = VAD_PADDING_MS
         self.default_gap_seconds = DEFAULT_GAP_SECONDS
         self.subtitle_auto_params = True

@@ -102,6 +102,12 @@ class SettingsWidget(QWidget):
         self.check_stable_ts.stateChanged.connect(self._on_setting_changed)
         whisper_layout.addRow("", self.check_stable_ts)
         
+        # Initial Prompt checkbox
+        self.check_initial_prompt = QCheckBox("Initial Prompt 사용 (스크립트 기반 힌트)")
+        self.check_initial_prompt.setToolTip("체크 시: 스크립트 텍스트를 Whisper에 힌트로 제공\n해제 시: 힌트 없이 순수 음성인식")
+        self.check_initial_prompt.stateChanged.connect(self._on_setting_changed)
+        whisper_layout.addRow("", self.check_initial_prompt)
+        
         processing_layout.addLayout(whisper_layout)
         
         # Separator
@@ -188,6 +194,7 @@ class SettingsWidget(QWidget):
         self.combo_language.setCurrentText(lang_text)
             
         self.check_stable_ts.setChecked(self._config.use_stable_ts)
+        self.check_initial_prompt.setChecked(self._config.use_initial_prompt)
         
         # Audio
         self.spin_vad_padding.setValue(self._config.vad_padding_ms)
@@ -209,6 +216,7 @@ class SettingsWidget(QWidget):
         """Block or unblock signals from all controls."""
         controls = [
             self.combo_model, self.combo_language, self.check_stable_ts,
+            self.check_initial_prompt,
             self.spin_vad_padding, self.spin_gap,
             self.spin_line_soft, self.spin_line_hard, self.spin_max_lines,
             self.check_split_conj, self.check_auto_params
@@ -239,6 +247,7 @@ class SettingsWidget(QWidget):
         self._config.whisper_model = self.combo_model.currentText()
         self._config.whisper_language = self.LANGUAGE_MAP.get(self.combo_language.currentText(), "ko")
         self._config.use_stable_ts = self.check_stable_ts.isChecked()
+        self._config.use_initial_prompt = self.check_initial_prompt.isChecked()
         
         # Audio
         self._config.vad_padding_ms = self.spin_vad_padding.value()

@@ -86,6 +86,11 @@ class Transcriber:
         """Transcribe an audio file with word-level timestamps"""
         audio_path = Path(audio_path)
         
+        # Check if initial_prompt should be used
+        config = get_config()
+        if not config.use_initial_prompt:
+            initial_prompt = None
+        
         if self.use_stable_ts:
             return self._transcribe_stable_ts(audio_path, language, initial_prompt)
         else:
