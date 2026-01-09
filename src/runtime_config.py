@@ -30,6 +30,7 @@ class RuntimeConfig:
     """
     # Whisper settings
     whisper_model: str = WHISPER_MODEL
+    whisper_language: str = "auto"  # 'ko', 'en', or 'auto'
     use_stable_ts: bool = USE_STABLE_TS
     
     # Audio settings
@@ -76,6 +77,7 @@ class RuntimeConfig:
     def reset_to_defaults(self):
         """Reset all settings to default values from config.py."""
         self.whisper_model = WHISPER_MODEL
+        self.whisper_language = "auto"
         self.use_stable_ts = USE_STABLE_TS
         self.vad_padding_ms = VAD_PADDING_MS
         self.default_gap_seconds = DEFAULT_GAP_SECONDS

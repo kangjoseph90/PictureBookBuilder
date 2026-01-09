@@ -194,9 +194,15 @@ class ProcessingThread(QThread):
                 if audio_path:
                     progress = 20 + int((i / total_speakers) * 25)
                     self.progress.emit(progress, f"Whisper 변환 중: {speaker}...")
+                    # Get configured language
+                    config = get_config()
+                    whisper_lang = config.whisper_language
+                    if whisper_lang == "auto":
+                        whisper_lang = None
+                        
                     transcriptions[speaker] = transcriber.transcribe(
                         audio_path, 
-                        language="ko",
+                        language=whisper_lang,
                         initial_prompt=initial_prompt
                     )
 

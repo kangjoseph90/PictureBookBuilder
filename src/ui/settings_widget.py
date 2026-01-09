@@ -24,6 +24,14 @@ class SettingsWidget(QWidget):
     # Available Whisper models
     WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
     
+    # Language options
+    LANGUAGE_MAP = {
+        "한국어": "ko",
+        "영어": "en",
+        "자동 감지": "auto"
+    }
+    LANGUAGE_MAP_REV = {v: k for k, v in LANGUAGE_MAP.items()}
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self._config = get_config()
@@ -82,6 +90,12 @@ class SettingsWidget(QWidget):
         self.combo_model.addItems(self.WHISPER_MODELS)
         self.combo_model.currentTextChanged.connect(self._on_setting_changed)
         whisper_layout.addRow("Whisper 모델:", self.combo_model)
+        
+        # Language selection
+        self.combo_language = QComboBox()
+        self.combo_language.addItems(list(self.LANGUAGE_MAP.keys()))
+        self.combo_language.currentTextChanged.connect(self._on_setting_changed)
+        whisper_layout.addRow("언어:", self.combo_language)
         
         # Stable-TS checkbox
         self.check_stable_ts = QCheckBox("Stable-TS 사용 (정확한 타이밍, 느림)")
@@ -168,6 +182,11 @@ class SettingsWidget(QWidget):
         idx = self.combo_model.findText(self._config.whisper_model)
         if idx >= 0:
             self.combo_model.setCurrentIndex(idx)
+        
+        # Language
+        lang_text = self.LANGUAGE_MAP_REV.get(self._config.whisper_language, "한국어")
+        self.combo_language.setCurrentText(lang_text)
+            
         self.check_stable_ts.setChecked(self._config.use_stable_ts)
         
         # Audio
@@ -189,7 +208,7 @@ class SettingsWidget(QWidget):
     def _block_signals(self, block: bool):
         """Block or unblock signals from all controls."""
         controls = [
-            self.combo_model, self.check_stable_ts,
+            self.combo_model, self.combo_language, self.check_stable_ts,
             self.spin_vad_padding, self.spin_gap,
             self.spin_line_soft, self.spin_line_hard, self.spin_max_lines,
             self.check_split_conj, self.check_auto_params
@@ -218,6 +237,7 @@ class SettingsWidget(QWidget):
         """Save current UI values to config."""
         # Whisper
         self._config.whisper_model = self.combo_model.currentText()
+        self._config.whisper_language = self.LANGUAGE_MAP.get(self.combo_language.currentText(), "ko")
         self._config.use_stable_ts = self.check_stable_ts.isChecked()
         
         # Audio
