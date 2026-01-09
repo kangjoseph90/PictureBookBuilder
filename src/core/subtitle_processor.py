@@ -333,7 +333,7 @@ class SubtitleProcessor:
             bonus += binding_penalty * 2  # 강한 억제
 
         return bonus
-    def _find_best_break(self, text: str, target_pos: int, limit_pos: int, is_segment: bool = True, min_pos: int = 0) -> Optional[int]:
+    def _find_best_break(self, text: str, target_pos: int, limit_pos: int, is_segment: bool = True, min_pos: int = 0, strict: bool = False) -> Optional[int]:
         """Find the best break position using scoring system
         
         Args:
@@ -342,6 +342,7 @@ class SubtitleProcessor:
             limit_pos: Maximum allowed position (hard limit)
             is_segment: True for segment split, False for line break
             min_pos: Minimum position (to avoid overflow in next segment)
+            strict: If True, prioritizes distance to target_pos over linguistic bonus
         
         Returns:
             Best space index to break at, or None
@@ -364,9 +365,6 @@ class SubtitleProcessor:
         if lang == 'ko':
             morpheme_cache = self._analyze_sentence_morphemes(text)
         
-        # DEBUG: 디버깅 정보 수집
-        debug_candidates = []
-        
         for space_idx in space_indices:
             # Hard Limit: 절대 초과 불가
             if space_idx > limit_pos:
@@ -376,9 +374,11 @@ class SubtitleProcessor:
             if space_idx < min_pos:
                 continue
             
-            # 기본 점수: 목표 지점과의 거리에 따른 페널티 (제곱 페널티 적용하여 중앙 선호)
+            # 기본 점수: 목표 지점과의 거리에 따른 페널티
+            # strict 모드일 경우 거리 페널티 가중치를 아주 높게 설정
+            dist_weight = score_dist_weight * (5 if strict else 1)
             distance_ratio = abs(space_idx - target_pos) / max(1, target_pos)
-            distance_score = -(distance_ratio ** 2) * score_dist_weight
+            distance_score = -(distance_ratio ** 2) * dist_weight
             
             # 언어적 가산점 (한국어는 문맥 기반 캐시 사용)
             linguistic_score = self._calculate_linguistic_bonus(text, space_idx, lang, is_segment, morpheme_cache)
@@ -395,49 +395,9 @@ class SubtitleProcessor:
             
             score = distance_score + linguistic_score + orphan_penalty
             
-            # DEBUG: 후보 정보 저장
-            prev_word = self._get_prev_word(text, space_idx)
-            next_word = self._get_next_word(text, space_idx)
-            prev_char = self._get_prev_char(text, space_idx)
-            
-            # 문맥 기반 품사 정보 사용 (캐시)
-            if morpheme_cache and space_idx in morpheme_cache:
-                prev_first_pos, prev_last_pos, next_first_pos, next_last_pos = morpheme_cache[space_idx]
-            else:
-                prev_first_pos = prev_last_pos = next_first_pos = next_last_pos = None
-            debug_candidates.append({
-                'idx': space_idx,
-                'text_before': text[:space_idx],
-                'prev_word': prev_word,
-                'next_word': next_word,
-                'prev_char': prev_char,
-                'prev_last_pos': prev_last_pos,
-                'next_first_pos': next_first_pos,
-                'distance': distance_score,
-                'linguistic': linguistic_score,
-                'orphan': orphan_penalty,
-                'total': score
-            })
-            
             if score > best_score:
                 best_score = score
                 best_idx = space_idx
-        
-        # DEBUG: 결과 출력
-        if debug_candidates:
-            mode_str = "SEGMENT" if is_segment else "LINE"
-            print(f"\n=== {mode_str} Break Debug: target={target_pos}, limit={limit_pos} ===")
-            print(f"Text: {text}")
-            for c in debug_candidates:
-                marker = " <<<" if c['idx'] == best_idx else ""
-                pos_hint = ""
-                if c.get('prev_last_pos') or c.get('next_first_pos'):
-                    pos_hint = f" [{c.get('prev_last_pos')}|{c.get('next_first_pos')}]"
-                print(f"  [{c['idx']:2d}] '{c['prev_word']}({c['prev_char']})'{pos_hint} | "
-                      f"Dist:{c['distance']:6.2f} + Ling:{c['linguistic']:3d} + Orph:{c['orphan']:4d} = "
-                      f"Total:{c['total']:7.2f}{marker}")
-            print(f"Best: idx={best_idx}, score={best_score:.2f}")
-            print()
         
         return best_idx
     
@@ -505,9 +465,14 @@ class SubtitleProcessor:
             best_break = self._find_best_break(remaining_text, target_pos, limit_pos, is_segment=is_segment, min_pos=min_pos)
             
             if best_break is None:
-                # 분할점을 찾지 못한 경우 (단어가 너무 길거나 공백이 없음)
-                # 어쩔 수 없이 hard_cap 지점에서 강제로 나눔
-                best_break = min(len(remaining_text) - 1, hard_cap)
+                # 1차 시도 실패 시 Fallback 로직:
+                # strict=True를 통해 target_pos에 최대한 가까운 공백을 찾음
+                # min_pos=0, limit_pos를 해제(문장 끝까지)하여 단어가 잘리는 것보다 길어지는 것을 허용
+                best_break = self._find_best_break(remaining_text, target_pos, len(remaining_text), is_segment=is_segment, min_pos=0, strict=True)
+                
+                # 재탐색 후에도 못 찾았다면 (텍스트 전체에 공백 자체가 아예 없는 경우) 최후의 수단으로 자름
+                if best_break is None:
+                    best_break = min(len(remaining_text) - 1, hard_cap)
             
             # 전체 텍스트 기준 인덱스로 변환
             absolute_pos = offset + best_break
