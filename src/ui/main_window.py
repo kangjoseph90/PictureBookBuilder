@@ -276,6 +276,10 @@ class ProcessingThread(QThread):
             import traceback
             traceback.print_exc()
             self.finished.emit(False, f"오류 발생: {str(e)}", None)
+        
+        finally:
+            # Cleanup: Release models from GPU memory
+            self._cleanup_models(locals())
     
     def _build_whisper_prompt(self, speakers: list[str], script_text: str, max_length: int = 200) -> str:
         """Build initial prompt for Whisper from speakers and script keywords
@@ -309,6 +313,32 @@ class ProcessingThread(QThread):
             result = result[:max_length].rsplit(', ', 1)[0]
         
         return result
+    
+    def _cleanup_models(self, local_vars: dict):
+        """Clean up models and release GPU memory after processing"""
+        import gc
+        
+        try:
+            # Delete model references
+            if 'transcriber' in local_vars and local_vars['transcriber'] is not None:
+                del local_vars['transcriber']
+            if 'vad' in local_vars and local_vars['vad'] is not None:
+                del local_vars['vad']
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Clear GPU cache if torch is available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("GPU memory released successfully")
+            except ImportError:
+                pass
+                
+        except Exception as e:
+            print(f"Warning: Model cleanup failed: {e}")
 
 
 class MainWindow(QMainWindow):
