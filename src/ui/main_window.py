@@ -465,6 +465,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PictureBookBuilder")
         self.setMinimumSize(1200, 800)
         
+        # Set window icon
+        if getattr(sys, 'frozen', False):
+            # PyInstaller mode
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Normal mode
+            base_path = Path(__file__).parent.parent.parent
+            
+        icon_path = base_path / "assets" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        
         self.script_path: Optional[str] = None
         self.image_folder: Optional[str] = None
         self.speakers: list[str] = []

@@ -39,7 +39,8 @@ def build():
         "--clean",
         "--windowed", # GUI mode
         f"--paths={SRC_DIR}",
-        "--icon=NONE", # Default icon for now
+        f"--icon={BASE_DIR / 'assets' / 'icon.ico'}", 
+        f"--add-data={BASE_DIR / 'assets'};assets",
     ]
 
     # Add collected data/binaries/imports
