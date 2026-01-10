@@ -598,8 +598,13 @@ class MainWindow(QMainWindow):
         self.action_render.triggered.connect(self._render_video)
         self.action_render.setEnabled(False)
         export_menu.addAction(self.action_render)
-        
+
         export_menu.addSeparator()
+
+        self.action_export_audio = QAction("오디오 내보내기...", self)
+        self.action_export_audio.triggered.connect(self._export_audio_dialog)
+        self.action_export_audio.setEnabled(False)
+        export_menu.addAction(self.action_export_audio)
         
         self.action_export_srt = QAction("SRT 자막 내보내기...", self)
         self.action_export_srt.triggered.connect(self._export_srt)
@@ -2592,6 +2597,14 @@ class MainWindow(QMainWindow):
             except:
                 pass
             self._temp_render_audio = None
+    def _export_audio_dialog(self):
+        """Show dialog to export audio only"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "오디오 저장", "output.wav", "Audio Files (*.wav)"
+        )
+        if path:
+            self._export_audio_only(path)
+
     def _new_project(self):
         """Create a new project"""
         from PyQt6.QtWidgets import QMessageBox
@@ -2637,6 +2650,7 @@ class MainWindow(QMainWindow):
         self.action_export_xml.setEnabled(False)
         self.action_render.setEnabled(False)
         self.action_apply_images.setEnabled(False)
+        self.action_export_audio.setEnabled(False) # Added this line
         
         # Reset preview
         self.preview_widget.clear_preview()
@@ -2864,6 +2878,7 @@ class MainWindow(QMainWindow):
             self.action_export_srt.setEnabled(True)
             self.action_export_xml.setEnabled(True)
             self.action_render.setEnabled(True)
+            self.action_export_audio.setEnabled(True)
             
             # Enable image apply button if we have images
             if self.image_list.count() > 0:
