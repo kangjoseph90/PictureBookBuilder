@@ -87,6 +87,7 @@ class PreviewWidget(QWidget):
         # Seek slider
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
+        self.seek_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.seek_slider.sliderMoved.connect(self._on_seek)
         self.seek_slider.sliderPressed.connect(self._on_seek_start)
         self.seek_slider.sliderReleased.connect(self._on_seek_end)
@@ -105,6 +106,7 @@ class PreviewWidget(QWidget):
         self.btn_start = QPushButton()
         self.btn_start.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.btn_start.setToolTip("맨 앞으로")
+        self.btn_start.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_start.clicked.connect(self._go_to_start)
         self.btn_start.setFixedWidth(40)
         controls_layout.addWidget(self.btn_start)
@@ -112,6 +114,7 @@ class PreviewWidget(QWidget):
         self.btn_play = QPushButton()
         self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.btn_play.setToolTip("재생/일시정지")
+        self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_play.clicked.connect(self.toggle_playback)
         self.btn_play.setFixedWidth(40) # Smaller as it's icon only
         controls_layout.addWidget(self.btn_play)
@@ -119,6 +122,7 @@ class PreviewWidget(QWidget):
         self.btn_stop = QPushButton()
         self.btn_stop.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.btn_stop.setToolTip("정지")
+        self.btn_stop.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_stop.clicked.connect(self._stop)
         self.btn_stop.setFixedWidth(40)
         controls_layout.addWidget(self.btn_stop)
@@ -126,6 +130,7 @@ class PreviewWidget(QWidget):
         self.btn_end = QPushButton()
         self.btn_end.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
         self.btn_end.setToolTip("맨 뒤로")
+        self.btn_end.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_end.clicked.connect(self._go_to_end)
         self.btn_end.setFixedWidth(40)
         controls_layout.addWidget(self.btn_end)
@@ -136,6 +141,7 @@ class PreviewWidget(QWidget):
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
         self.speed_combo.setCurrentIndex(2) # 1.0x
+        self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         self.speed_combo.setFixedWidth(70)
         controls_layout.addWidget(self.speed_combo)

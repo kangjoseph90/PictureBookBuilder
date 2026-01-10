@@ -9,7 +9,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QSplitter, QTextEdit, QSlider, QSpinBox, QProgressBar, QDialog,
+    QSplitter, QTextEdit, QSlider, QSpinBox, QDoubleSpinBox, QProgressBar, QDialog,
     QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QToolBar, QStyle, QMenu, QStatusBar, QSizePolicy,
     QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView,
@@ -710,6 +710,7 @@ class MainWindow(QMainWindow):
         self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.mapping_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.mapping_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mapping_table.cellClicked.connect(self._on_mapping_table_clicked)
         mapping_layout.addWidget(self.mapping_table)
         
@@ -740,6 +741,7 @@ class MainWindow(QMainWindow):
         self.image_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.image_list.setDragEnabled(True)
         self.image_list.setAcceptDrops(True)
+        self.image_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         # Use custom delegate to draw text BELOW icon
         self.image_list.setItemDelegate(ImageGridDelegate(self.image_list))
@@ -820,6 +822,17 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(splitter)
         return container
+
+    def mousePressEvent(self, event):
+        """Clear focus when clicking on empty space (background)"""
+        # Get currently focused widget
+        focused = QApplication.focusWidget()
+        
+        # If it's an input widget, clear focus
+        if focused and isinstance(focused, (QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox)):
+            focused.clearFocus()
+            
+        super().mousePressEvent(event)
     
     def keyPressEvent(self, event):
         """Handle global key press events"""
@@ -828,8 +841,10 @@ class MainWindow(QMainWindow):
             focused = QApplication.focusWidget()
             # If focus is on a text input widget, allow standard behavior (typing space)
             if isinstance(focused, (QLineEdit, QTextEdit, QPlainTextEdit)):
-                super().keyPressEvent(event)
-                return
+                # If it's a read-only text widget, still allow playback toggle
+                if hasattr(focused, 'isReadOnly') and not focused.isReadOnly():
+                    super().keyPressEvent(event)
+                    return
 
             # Otherwise toggle playback
             if hasattr(self, 'preview_widget'):

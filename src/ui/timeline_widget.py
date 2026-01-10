@@ -77,6 +77,7 @@ class TimelineCanvas(QWidget):
         super().__init__()
         self.setMinimumHeight(150)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
         # Timeline state
         self.clips: list[TimelineClip] = []
@@ -1012,6 +1013,13 @@ class TimelineCanvas(QWidget):
             self.scroll_offset = max(0, self.scroll_offset)
         
         self.update()
+
+    def keyPressEvent(self, event):
+        """Handle key press events"""
+        if event.key() == Qt.Key.Key_Space:
+            event.ignore()  # Let main window handle playback toggle
+        else:
+            super().keyPressEvent(event)
 
 
 class TimelineWidget(QWidget):
