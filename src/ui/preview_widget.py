@@ -112,7 +112,7 @@ class PreviewWidget(QWidget):
         self.btn_play = QPushButton()
         self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.btn_play.setToolTip("재생/일시정지")
-        self.btn_play.clicked.connect(self._toggle_play)
+        self.btn_play.clicked.connect(self.toggle_playback)
         self.btn_play.setFixedWidth(40) # Smaller as it's icon only
         controls_layout.addWidget(self.btn_play)
         
@@ -415,7 +415,7 @@ class PreviewWidget(QWidget):
         self.status_label.setText(f"오류: {self.media_player.errorString()}")
         self.status_label.setStyleSheet("color: red;")
     
-    def _toggle_play(self):
+    def toggle_playback(self):
         """Toggle playback"""
         if self.audio_mixer.is_playing:
             self.audio_mixer.pause()

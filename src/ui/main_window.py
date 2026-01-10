@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QSplitter, QTextEdit, QSlider, QSpinBox, QProgressBar, QDialog,
     QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QToolBar, QStyle, QMenu, QStatusBar, QSizePolicy,
-    QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView
+    QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView,
+    QLineEdit, QPlainTextEdit
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPalette, QFontMetrics
@@ -820,6 +821,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return container
     
+    def keyPressEvent(self, event):
+        """Handle global key press events"""
+        # Spacebar to toggle playback, unless a text field is focused
+        if event.key() == Qt.Key.Key_Space:
+            focused = QApplication.focusWidget()
+            # If focus is on a text input widget, allow standard behavior (typing space)
+            if isinstance(focused, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                super().keyPressEvent(event)
+                return
+
+            # Otherwise toggle playback
+            if hasattr(self, 'preview_widget'):
+                self.preview_widget.toggle_playback()
+                return
+
+        super().keyPressEvent(event)
+
     def eventFilter(self, source, event):
         """Handle clicks on placeholders when empty"""
         if event.type() == QEvent.Type.MouseButtonRelease:
