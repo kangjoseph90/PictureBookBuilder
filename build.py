@@ -1,5 +1,6 @@
 import PyInstaller.__main__
 import sys
+import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
@@ -7,6 +8,9 @@ def build():
     BASE_DIR = Path(__file__).parent.absolute()
     SRC_DIR = BASE_DIR / "src"
     
+    # Platform specific separator
+    sep = ";" if os.name == 'nt' else ":"
+
     # Collect data and hidden imports for complex libraries
     # faster_whisper, moviepy, etc.
     datas = []
@@ -39,17 +43,17 @@ def build():
         "--clean",
         "--windowed", # GUI mode
         f"--paths={SRC_DIR}",
-        f"--icon={BASE_DIR / 'assets' / 'icon.ico'}", 
-        f"--add-data={BASE_DIR / 'assets'};assets",
+        # f"--icon={BASE_DIR / 'assets' / 'icon.ico'}", # Commented out as icon might be missing or handled differently on Linux
+        f"--add-data={BASE_DIR / 'assets'}{sep}assets",
     ]
 
     # Add collected data/binaries/imports
     for d in datas:
         if d[1] != ".": # Avoid collecting root recursively if it happens
-             args.append(f"--add-data={d[0]};{d[1]}")
+             args.append(f"--add-data={d[0]}{sep}{d[1]}")
     
     for b in binaries:
-        args.append(f"--add-binary={b[0]};{b[1]}")
+        args.append(f"--add-binary={b[0]}{sep}{b[1]}")
 
     for h in set(hiddenimports): # Deduplicate
         args.append(f"--hidden-import={h}")

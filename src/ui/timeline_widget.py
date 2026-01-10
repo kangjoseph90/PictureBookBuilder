@@ -2,7 +2,8 @@
 Timeline Widget - Visual timeline editor with waveform display and playhead
 """
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
+import copy
 import numpy as np
 
 from PyQt6.QtWidgets import (
@@ -15,49 +16,7 @@ from PyQt6.QtGui import (
     QMouseEvent, QWheelEvent, QPaintEvent, QPainterPath, QCursor, QPixmap
 )
 
-
-@dataclass
-class TimelineClip:
-    """A clip on the timeline
-    
-    Time coordinate system:
-    - start: Timeline position (when this clip plays in the final output)
-    - duration: Length of the clip on timeline (seconds)
-    - offset: Original audio offset (where to start reading from source audio)
-    
-    Audio extraction formula:
-        audio_segment = source_audio[offset : offset + duration]
-    
-    The offset represents the exact position in the original audio file,
-    without any padding applied. Padding is only used during initial
-    alignment and audio extraction, not stored in the clip.
-    """
-    id: str
-    name: str
-    start: float  # Timeline position (when it plays)
-    duration: float  # seconds
-    track: int
-    color: QColor
-    clip_type: str = "audio"  # "audio", "image", or "subtitle"
-    waveform: list = field(default_factory=list)  # Normalized amplitude samples (0-1)
-    image_path: Optional[str] = None  # Path to image file for thumbnails
-    
-    # Source audio info (for trimming/editing)
-    offset: float = 0.0        # Offset in original audio (seconds)
-    segment_index: int = -1    # Index in result_data['aligned']
-    speaker: str = ""          # Speaker name for audio lookup
-    words: list = field(default_factory=list)  # Word timestamps for subtitle editing
-    
-    @property
-    def end(self) -> float:
-        """Timeline end position"""
-        return self.start + self.duration
-    
-    @property
-    def source_end(self) -> float:
-        """End position in original audio (offset + duration)"""
-        return self.offset + self.duration
-
+from .clip import TimelineClip
 
 class TimelineCanvas(QWidget):
     """Canvas widget for drawing the timeline with playhead"""
@@ -70,6 +29,11 @@ class TimelineCanvas(QWidget):
     clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     
+    # NEW: Signal to notify command generation
+    # action_type: 'move', 'resize', etc.
+    # data: dictionary with relevant data to construct the command
+    history_command_generated = pyqtSignal(str, dict)
+
     EDGE_THRESHOLD = 8  # Pixels from edge to trigger resize
     SNAP_THRESHOLD = 10  # Pixels for snapping effect
     
@@ -104,6 +68,9 @@ class TimelineCanvas(QWidget):
         self.drag_is_ripple: bool = False
         self.drag_initial_positions: dict[str, float] = {}
         
+        # State tracking for Undo/Redo
+        self.drag_start_state: dict[str, TimelineClip] = {} # Map ID -> Copy of Clip
+
         # Edge resize state
         self.resizing_clip: Optional[str] = None
         self.resize_edge: str = ""  # "left" or "right"
@@ -112,6 +79,10 @@ class TimelineCanvas(QWidget):
         self.resize_original_duration: float = 0
         self.resize_original_start: float = 0
         
+        # Undo state for resize
+        self.resize_start_state: Optional[TimelineClip] = None
+        self.linked_clip_start_state: Optional[TimelineClip] = None
+
         # Colors
         self.speaker_colors = [
             QColor("#E91E63"),  # Pink
@@ -677,6 +648,10 @@ class TimelineCanvas(QWidget):
             self.selected_clip = edge_clip.id
             self.clip_selected.emit(edge_clip.id)
             
+            # Snapshot state for undo
+            self.resize_start_state = copy.deepcopy(edge_clip)
+            self.linked_clip_start_state = None
+
             # Check for Ctrl key - linked boundary mode
             self.linked_clip = None
             self.linked_original_start = 0.0
@@ -701,12 +676,14 @@ class TimelineCanvas(QWidget):
                         self.linked_clip = clip
                         self.linked_original_start = clip.start
                         self.linked_original_duration = clip.duration
+                        self.linked_clip_start_state = copy.deepcopy(clip)
                         break
                     elif edge == "right" and abs(clip_start - boundary_time) < 0.01:
                         # Adjacent clip's left edge touches our right edge
                         self.linked_clip = clip
                         self.linked_original_start = clip.start
                         self.linked_original_duration = clip.duration
+                        self.linked_clip_start_state = copy.deepcopy(clip)
                         break
             
             self.update()
@@ -724,6 +701,10 @@ class TimelineCanvas(QWidget):
                 self.drag_clip_start = clip.start
                 # Store all clip positions for ripple dragging
                 self.drag_initial_positions = {c.id: c.start for c in self.clips}
+
+                # Snapshot all clips for Undo
+                self.drag_start_state = {c.id: copy.deepcopy(c) for c in self.clips}
+
             elif event.button() == Qt.MouseButton.RightButton:
                 # Show context menu
                 self.clip_context_menu.emit(clip.id, event.globalPosition().toPoint())
@@ -961,6 +942,19 @@ class TimelineCanvas(QWidget):
             
             # Emit signal that clip was edited
             self.clip_edited.emit(self.resizing_clip)
+
+            # Emit command for undo/redo
+            if self.resize_start_state:
+                # Find current state of resized clip
+                current_clip = next((c for c in self.clips if c.id == self.resizing_clip), None)
+                if current_clip:
+                    modifications = [(self.resizing_clip, self.resize_start_state, copy.deepcopy(current_clip))]
+
+                    if self.linked_clip and self.linked_clip_start_state:
+                         modifications.append((self.linked_clip.id, self.linked_clip_start_state, copy.deepcopy(self.linked_clip)))
+
+                    self.history_command_generated.emit('modify', {'modifications': modifications, 'description': f'Resize {current_clip.name}'})
+
             self.resizing_clip = None
             self.resize_edge = ""
             self.active_snap_time = None
@@ -972,16 +966,34 @@ class TimelineCanvas(QWidget):
             self._update_throttle_timer.stop()
             self._pending_update = False
             
+            dragged_clip_id = self.dragging_clip
+            moved = False
+
             for clip in self.clips:
-                if clip.id == self.dragging_clip:
+                if clip.id == dragged_clip_id:
                     # Only emit if actually moved
                     if abs(clip.start - self.drag_clip_start) > 0.001:
+                        moved = True
                         self.clip_moved.emit(clip.id, clip.start)
                     break
+
+            if moved:
+                # Emit undo command
+                # Identify which clips changed
+                modifications = []
+                for cid, old_clip in self.drag_start_state.items():
+                    current_clip = next((c for c in self.clips if c.id == cid), None)
+                    if current_clip and (abs(current_clip.start - old_clip.start) > 0.001):
+                        modifications.append((cid, old_clip, copy.deepcopy(current_clip)))
+
+                if modifications:
+                     self.history_command_generated.emit('modify', {'modifications': modifications, 'description': 'Move clips'})
+
             self.dragging_clip = None
             self.active_snap_time = None
+            self.drag_start_state.clear()
             self.update()
-    
+
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         """Handle mouse double click - for editing subtitles"""
         x = event.position().x()
