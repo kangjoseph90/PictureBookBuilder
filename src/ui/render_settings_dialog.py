@@ -47,7 +47,14 @@ class RenderSettingsDialog(QDialog):
         }
 
         self._setup_ui()
-        self._update_preview()
+        # DEFER update until shown to ensure layout geometry is correct
+        # self._update_preview() 
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Updates preview position after layout is complete
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._update_preview)
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
