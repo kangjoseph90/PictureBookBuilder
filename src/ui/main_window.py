@@ -2479,7 +2479,7 @@ class MainWindow(QMainWindow):
             return
         
         # Show render settings dialog first
-        dialog = RenderSettingsDialog(self, clips=self.timeline_widget.canvas.clips)
+        dialog = RenderSettingsDialog(self, clips=self.timeline_widget.canvas.clips, speaker_audio_map=self.speaker_audio_map)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 

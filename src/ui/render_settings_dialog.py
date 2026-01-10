@@ -18,7 +18,7 @@ class RenderSettingsDialog(QDialog):
     Supports resolution, frame rate, and detailed subtitle styling.
     """
 
-    def __init__(self, parent=None, clips=None):
+    def __init__(self, parent=None, clips=None, speaker_audio_map=None):
         super().__init__(parent)
         self.setWindowTitle("영상 렌더링 설정")
         self.setMinimumSize(900, 700)
@@ -26,6 +26,10 @@ class RenderSettingsDialog(QDialog):
 
         # Store clips for preview
         self.clips = clips or []
+        self.speaker_audio_map = speaker_audio_map or {}
+        
+        # We need ScheduledClip for audio setup
+        from .audio_mixer import ScheduledClip
 
         # Default settings
         self.settings = {
@@ -47,6 +51,7 @@ class RenderSettingsDialog(QDialog):
         }
 
         self._setup_ui()
+        self._setup_audio()
         # DEFER update until shown to ensure layout geometry is correct
         # self._update_preview() 
 
@@ -414,3 +419,35 @@ class RenderSettingsDialog(QDialog):
 
     def get_settings(self):
         return self.settings
+
+    def _setup_audio(self):
+        """Setup audio clips for preview widget"""
+        from .audio_mixer import ScheduledClip
+        
+        audio_clips = []
+        for clip in self.clips:
+            if hasattr(clip, 'clip_type') and clip.clip_type == "audio":
+                # Use clip.speaker attribute or parsing
+                speaker = getattr(clip, 'speaker', None)
+                if not speaker and ":" in clip.name:
+                    speaker = clip.name.split(":")[0].strip()
+                
+                if speaker:
+                    # Get source path
+                    source_path = self.speaker_audio_map.get(speaker, "")
+                    
+                    sc = ScheduledClip(
+                        clip_id=getattr(clip, 'id', str(id(clip))),
+                        speaker=speaker,
+                        timeline_start=clip.start,
+                        timeline_end=clip.start + clip.duration,
+                        source_offset=getattr(clip, 'offset', 0.0),
+                        source_path=source_path,
+                        duration=clip.duration
+                    )
+                    audio_clips.append(sc)
+        
+        # Prepare valid speaker map
+        valid_map = {k: str(v) for k, v in self.speaker_audio_map.items() if v}
+        
+        self.preview_widget.set_audio_clips(audio_clips, valid_map)
