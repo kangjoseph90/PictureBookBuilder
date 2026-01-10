@@ -1,0 +1,409 @@
+"""
+Render Settings Dialog - UI for configuring video and subtitle rendering settings
+"""
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QLabel, QSpinBox, QComboBox, QCheckBox, QPushButton,
+    QFontComboBox, QColorDialog, QTabWidget, QWidget, QFrame
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QColor, QFont
+
+from .preview_widget import PreviewWidget
+from config import VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS
+
+class RenderSettingsDialog(QDialog):
+    """
+    Dialog for configuring render settings before video generation.
+    Supports resolution, frame rate, and detailed subtitle styling.
+    """
+
+    def __init__(self, parent=None, clips=None):
+        super().__init__(parent)
+        self.setWindowTitle("영상 렌더링 설정")
+        self.setMinimumSize(900, 700)
+        self.setModal(True)
+
+        # Store clips for preview
+        self.clips = clips or []
+
+        # Default settings
+        self.settings = {
+            'width': VIDEO_WIDTH,
+            'height': VIDEO_HEIGHT,
+            'fps': VIDEO_FPS,
+            'subtitle_enabled': True,
+            'font_family': 'Malgun Gothic',
+            'font_size': 32,
+            'font_color': '#FFFFFF',
+            'outline_enabled': True,
+            'outline_width': 2,
+            'outline_color': '#000000',
+            'bg_enabled': False,
+            'bg_color': '#000000', # Will be semi-transparent
+            'bg_alpha': 160,
+            'position': 'Bottom', # Bottom, Top, Center
+            'margin_v': 48
+        }
+
+        self._setup_ui()
+        self._update_preview()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+
+        # --- Left Panel: Settings ---
+        settings_panel = QWidget()
+        settings_layout = QVBoxLayout(settings_panel)
+        settings_layout.setContentsMargins(0, 0, 10, 0)
+
+        # Video Settings Group
+        video_group = QGroupBox("비디오 설정")
+        video_form = QFormLayout()
+
+        # Resolution
+        res_layout = QHBoxLayout()
+        self.spin_width = QSpinBox()
+        self.spin_width.setRange(100, 7680)
+        self.spin_width.setValue(self.settings['width'])
+        self.spin_width.setSuffix(" px")
+        self.spin_width.valueChanged.connect(self._on_setting_changed)
+
+        self.spin_height = QSpinBox()
+        self.spin_height.setRange(100, 4320)
+        self.spin_height.setValue(self.settings['height'])
+        self.spin_height.setSuffix(" px")
+        self.spin_height.valueChanged.connect(self._on_setting_changed)
+
+        res_layout.addWidget(self.spin_width)
+        res_layout.addWidget(QLabel("x"))
+        res_layout.addWidget(self.spin_height)
+        video_form.addRow("해상도:", res_layout)
+
+        # FPS
+        self.spin_fps = QSpinBox()
+        self.spin_fps.setRange(1, 144)
+        self.spin_fps.setValue(self.settings['fps'])
+        self.spin_fps.valueChanged.connect(self._on_setting_changed)
+        video_form.addRow("프레임 레이트:", self.spin_fps)
+
+        video_group.setLayout(video_form)
+        settings_layout.addWidget(video_group)
+
+        # Subtitle Settings Group
+        sub_group = QGroupBox("자막 설정")
+        sub_layout = QVBoxLayout()
+
+        # Toggle Enable
+        self.chk_sub_enable = QCheckBox("자막 포함")
+        self.chk_sub_enable.setChecked(self.settings['subtitle_enabled'])
+        self.chk_sub_enable.toggled.connect(self._on_sub_enable_toggled)
+        sub_layout.addWidget(self.chk_sub_enable)
+
+        self.sub_settings_widget = QWidget()
+        sub_form = QFormLayout(self.sub_settings_widget)
+        sub_form.setContentsMargins(0, 5, 0, 0)
+
+        # Font
+        self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(QFont(self.settings['font_family']))
+        self.font_combo.currentFontChanged.connect(self._on_setting_changed)
+        sub_form.addRow("폰트:", self.font_combo)
+
+        # Size
+        self.spin_font_size = QSpinBox()
+        self.spin_font_size.setRange(8, 200)
+        self.spin_font_size.setValue(self.settings['font_size'])
+        self.spin_font_size.valueChanged.connect(self._on_setting_changed)
+        sub_form.addRow("크기:", self.spin_font_size)
+
+        # Color
+        color_layout = QHBoxLayout()
+        self.btn_font_color = QPushButton()
+        self.btn_font_color.setFixedSize(50, 25)
+        self.btn_font_color.clicked.connect(lambda: self._pick_color('font_color', self.btn_font_color))
+        self._set_btn_color(self.btn_font_color, self.settings['font_color'])
+        color_layout.addWidget(self.btn_font_color)
+        sub_form.addRow("글자 색상:", color_layout)
+
+        # Outline
+        outline_layout = QHBoxLayout()
+        self.chk_outline = QCheckBox("테두리")
+        self.chk_outline.setChecked(self.settings['outline_enabled'])
+        self.chk_outline.toggled.connect(self._on_outline_toggled)
+
+        self.spin_outline_width = QSpinBox()
+        self.spin_outline_width.setRange(0, 20)
+        self.spin_outline_width.setValue(self.settings['outline_width'])
+        self.spin_outline_width.valueChanged.connect(self._on_setting_changed)
+
+        self.btn_outline_color = QPushButton()
+        self.btn_outline_color.setFixedSize(50, 25)
+        self.btn_outline_color.clicked.connect(lambda: self._pick_color('outline_color', self.btn_outline_color))
+        self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
+
+        outline_layout.addWidget(self.chk_outline)
+        outline_layout.addWidget(self.spin_outline_width)
+        outline_layout.addWidget(self.btn_outline_color)
+        sub_form.addRow("테두리:", outline_layout)
+
+        # Background
+        bg_layout = QHBoxLayout()
+        self.chk_bg = QCheckBox("배경")
+        self.chk_bg.setChecked(self.settings['bg_enabled'])
+        self.chk_bg.toggled.connect(self._on_bg_toggled)
+
+        self.btn_bg_color = QPushButton()
+        self.btn_bg_color.setFixedSize(50, 25)
+        self.btn_bg_color.clicked.connect(lambda: self._pick_color('bg_color', self.btn_bg_color))
+        self._set_btn_color(self.btn_bg_color, self.settings['bg_color'])
+
+        # Alpha (Transparency)
+        self.spin_bg_alpha = QSpinBox()
+        self.spin_bg_alpha.setRange(0, 255)
+        self.spin_bg_alpha.setValue(self.settings['bg_alpha'])
+        self.spin_bg_alpha.setToolTip("투명도 (0-255)")
+        self.spin_bg_alpha.valueChanged.connect(self._on_setting_changed)
+
+        bg_layout.addWidget(self.chk_bg)
+        bg_layout.addWidget(self.btn_bg_color)
+        bg_layout.addWidget(QLabel("투명도:"))
+        bg_layout.addWidget(self.spin_bg_alpha)
+        sub_form.addRow("배경:", bg_layout)
+
+        # Position
+        self.combo_position = QComboBox()
+        self.combo_position.addItems(["Bottom", "Top", "Center"])
+        self.combo_position.currentTextChanged.connect(self._on_setting_changed)
+        sub_form.addRow("위치:", self.combo_position)
+
+        # Margin V
+        self.spin_margin_v = QSpinBox()
+        self.spin_margin_v.setRange(0, 500)
+        self.spin_margin_v.setValue(self.settings['margin_v'])
+        self.spin_margin_v.valueChanged.connect(self._on_setting_changed)
+        sub_form.addRow("여백(수직):", self.spin_margin_v)
+
+        sub_layout.addWidget(self.sub_settings_widget)
+        sub_group.setLayout(sub_layout)
+        settings_layout.addWidget(sub_group)
+
+        # Default Reset Button
+        btn_reset = QPushButton("기본값 복원")
+        btn_reset.clicked.connect(self._reset_to_defaults)
+        settings_layout.addWidget(btn_reset)
+
+        settings_layout.addStretch()
+
+        # Render Buttons
+        btn_layout = QHBoxLayout()
+        self.btn_cancel = QPushButton("취소")
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_render = QPushButton("렌더링 시작")
+        self.btn_render.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+        self.btn_render.clicked.connect(self.accept)
+
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_render)
+        settings_layout.addLayout(btn_layout)
+
+        settings_panel.setFixedWidth(350)
+
+        # --- Right Panel: Preview ---
+        preview_panel = QGroupBox("미리보기")
+        preview_layout = QVBoxLayout(preview_panel)
+
+        self.preview_widget = PreviewWidget()
+        # Initial load of timeline clips
+        self.preview_widget.set_timeline_clips(self.clips)
+
+        # Only show subtitle, hide other controls if possible or keep them
+        # For simplicity, we reuse the widget but we should probably customize it or create a simplified version.
+        # But PreviewWidget is coupled with AudioMixer, etc.
+        # Let's use it as is for consistency, but we might want to disable some controls or audio if needed.
+
+        preview_layout.addWidget(self.preview_widget)
+
+        layout.addWidget(settings_panel)
+        layout.addWidget(preview_panel)
+
+    def _on_sub_enable_toggled(self, checked):
+        self.sub_settings_widget.setEnabled(checked)
+        self._on_setting_changed()
+
+    def _set_btn_color(self, btn, color_hex):
+        btn.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #555;")
+
+    def _pick_color(self, key, btn):
+        current = QColor(self.settings[key])
+        color = QColorDialog.getColor(current, self, "색상 선택")
+        if color.isValid():
+            self.settings[key] = color.name()
+            self._set_btn_color(btn, color.name())
+            self._on_setting_changed()
+
+    def _on_outline_toggled(self, checked):
+        if checked and self.chk_bg.isChecked():
+             self.chk_bg.setChecked(False)
+        self._on_setting_changed()
+
+    def _on_bg_toggled(self, checked):
+        if checked and self.chk_outline.isChecked():
+            self.chk_outline.setChecked(False)
+        self._on_setting_changed()
+
+    def _on_setting_changed(self):
+        # Update settings dict
+        self.settings['width'] = self.spin_width.value()
+        self.settings['height'] = self.spin_height.value()
+        self.settings['fps'] = self.spin_fps.value()
+        self.settings['subtitle_enabled'] = self.chk_sub_enable.isChecked()
+        self.settings['font_family'] = self.font_combo.currentFont().family()
+        self.settings['font_size'] = self.spin_font_size.value()
+        self.settings['outline_enabled'] = self.chk_outline.isChecked()
+        self.settings['outline_width'] = self.spin_outline_width.value()
+        self.settings['bg_enabled'] = self.chk_bg.isChecked()
+        self.settings['bg_alpha'] = self.spin_bg_alpha.value()
+        self.settings['position'] = self.combo_position.currentText()
+        self.settings['margin_v'] = self.spin_margin_v.value()
+
+        self._update_preview()
+
+    def _update_preview(self):
+        """Update the preview widget styling based on current settings"""
+        # Apply subtitle styling to the preview widget's subtitle label
+
+        if not self.settings['subtitle_enabled']:
+            self.preview_widget.subtitle_label.hide()
+            return
+
+        style = f"""
+            QLabel {{
+                font-family: "{self.settings['font_family']}";
+                font-size: {self.settings['font_size'] // 2}px; /* Scale down for preview */
+                color: {self.settings['font_color']};
+                padding: 4px 8px;
+                border-radius: 2px;
+            }}
+        """
+
+        # Background
+        if self.settings['bg_enabled']:
+            c = QColor(self.settings['bg_color'])
+            style += f"QLabel {{ background-color: rgba({c.red()}, {c.green()}, {c.blue()}, {self.settings['bg_alpha']}); }}"
+        else:
+            style += "QLabel { background-color: transparent; }"
+
+        # Outline (Simulated with text-shadow or border)
+        # QLabel styling is limited. We might not be able to do perfect text outline.
+        # We can simulate outline with border if background is transparent? No, that's box border.
+        # Basic QLabel doesn't support text stroke/outline via stylesheet easily.
+        # For preview purposes, we might just show the box border if enabled?
+        if self.settings['outline_enabled'] and self.settings['outline_width'] > 0:
+             # This sets the border of the LABEL BOX, not the text.
+             # Text outline is hard in QLabel.
+             # We will just set the label border for now as a proxy or if background is enabled.
+             pass
+
+        self.preview_widget.subtitle_label.setStyleSheet(style)
+
+        # Position logic
+        # We need to hack PreviewWidget to support custom positioning
+        self._apply_preview_position()
+
+        # Force subtitle to show if there is one at current position
+        current_pos = self.preview_widget.media_player.position()
+        self.preview_widget._on_position_changed(current_pos)
+
+    def _apply_preview_position(self):
+        # This requires modifying PreviewWidget to expose positioning logic
+        # OR we can manually move it here if we access the label directly.
+
+        label = self.preview_widget.subtitle_label
+        container = self.preview_widget.image_label
+
+        if not label.isVisible():
+            return
+
+        # We need to defer this or trigger it on resize/show
+        # For now, let's just use the default center-bottom logic in PreviewWidget
+        # but modify the margin via a temporary patch or subclassing.
+        # Since PreviewWidget._reposition_subtitle is called on resize/update,
+        # we can monkeypatch it or update a property if we added one.
+
+        # Let's add a `custom_layout_callback` or similar to PreviewWidget later.
+        # For now, we will override the method instance.
+
+        pos_setting = self.settings['position']
+        margin_v = self.settings['margin_v'] // 2 # Scale for preview
+
+        def custom_reposition():
+            if not label.isVisible(): return
+
+            img_w = container.width()
+            img_h = container.height()
+
+            max_w = int(img_w * 0.9)
+            label.setMaximumWidth(max_w)
+            label.adjustSize()
+
+            sub_w = label.width()
+            sub_h = label.height()
+
+            x = (img_w - sub_w) // 2
+            y = 0
+
+            if pos_setting == "Bottom":
+                y = img_h - sub_h - margin_v
+            elif pos_setting == "Top":
+                y = margin_v
+            else: # Center
+                y = (img_h - sub_h) // 2
+
+            label.move(x, y)
+
+        self.preview_widget._reposition_subtitle = custom_reposition
+        custom_reposition()
+
+    def _reset_to_defaults(self):
+        # Reset settings dict
+        self.settings.update({
+            'width': VIDEO_WIDTH,
+            'height': VIDEO_HEIGHT,
+            'fps': VIDEO_FPS,
+            'subtitle_enabled': True,
+            'font_family': 'Malgun Gothic',
+            'font_size': 32,
+            'font_color': '#FFFFFF',
+            'outline_enabled': True,
+            'outline_width': 2,
+            'outline_color': '#000000',
+            'bg_enabled': False,
+            'bg_color': '#000000',
+            'bg_alpha': 160,
+            'position': 'Bottom',
+            'margin_v': 48
+        })
+
+        # Update UI components
+        self.spin_width.setValue(self.settings['width'])
+        self.spin_height.setValue(self.settings['height'])
+        self.spin_fps.setValue(self.settings['fps'])
+        self.chk_sub_enable.setChecked(self.settings['subtitle_enabled'])
+        self.font_combo.setCurrentFont(QFont(self.settings['font_family']))
+        self.spin_font_size.setValue(self.settings['font_size'])
+        self.chk_outline.setChecked(self.settings['outline_enabled'])
+        self.spin_outline_width.setValue(self.settings['outline_width'])
+        self.chk_bg.setChecked(self.settings['bg_enabled'])
+        self.spin_bg_alpha.setValue(self.settings['bg_alpha'])
+        self.combo_position.setCurrentText(self.settings['position'])
+        self.spin_margin_v.setValue(self.settings['margin_v'])
+
+        self._set_btn_color(self.btn_font_color, self.settings['font_color'])
+        self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
+        self._set_btn_color(self.btn_bg_color, self.settings['bg_color'])
+
+        self._on_setting_changed()
+
+    def get_settings(self):
+        return self.settings

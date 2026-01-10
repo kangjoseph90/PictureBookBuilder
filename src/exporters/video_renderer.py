@@ -123,6 +123,7 @@ class VideoRenderer:
         subtitles: list[SubtitleSegment] | None = None,
         output_path: str | Path = "output.mp4",
         progress_callback=None,
+        settings: dict = None,
     ) -> None:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,6 +223,7 @@ class VideoRenderer:
             # Filtergraph
             filter_parts: list[str] = []
             for i in range(len(visuals)):
+                # Apply scaling using self.width and self.height
                 filter_parts.append(
                     f"[{i}:v]scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
                     f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{i}]"
@@ -232,8 +234,157 @@ class VideoRenderer:
 
             if srt_path:
                 srt_escaped = self._escape_path_for_ffmpeg_filter(srt_path)
-                # Match preview-like size: smaller font, bottom-center.
-                style = "Fontname=Malgun Gothic,Fontsize=32,Outline=2,Shadow=0,Alignment=2,MarginV=48"
+
+                # Default style settings
+                s = settings or {}
+                font_name = s.get('font_family', 'Malgun Gothic')
+                # Scale font size based on video height if necessary, but here we treat it as pixels for simplicity
+                # or match the logic user expects.
+                # Note: FFmpeg Fontsize is height in pixels.
+                font_size = s.get('font_size', 32)
+
+                # Colors are usually &HBBGGRR in ASS/SSA, but force_style might take different formats.
+                # force_style uses ASS style parameters.
+                # ASS color format: &HAABBGGRR (Alpha, Blue, Green, Red) in hex.
+                # The user provides #RRGGBB via settings.
+
+                def to_ass_color(hex_color: str, alpha: int = 0) -> str:
+                    # Convert #RRGGBB to &HAABBGGRR
+                    # Alpha: 0 (opaque) to 255 (transparent) in Qt
+                    # ASS Alpha: 00 (opaque) to FF (transparent)
+
+                    if hex_color.startswith('#'):
+                        hex_color = hex_color[1:]
+
+                    if len(hex_color) == 6:
+                        r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
+                        # ASS is BBGGRR
+                        return f"&H{alpha:02X}{b}{g}{r}"
+                    return f"&H{alpha:02X}FFFFFF"
+
+                font_color = to_ass_color(s.get('font_color', '#FFFFFF'), 0) # Opaque text
+
+                # Outline
+                outline = s.get('outline_width', 2) if s.get('outline_enabled', True) else 0
+                outline_color = to_ass_color(s.get('outline_color', '#000000'), 0)
+
+                # Background (Box)
+                # ASS BorderStyle=3 is "Opaque Box"
+                # BorderStyle=1 is "Outline + Shadow"
+                # We need to switch based on bg_enabled
+                border_style = 3 if s.get('bg_enabled', False) else 1
+
+                # If bg_enabled, 'Outline' becomes the box padding or border?
+                # Actually, standard force_style doesn't support complex box styling easily.
+                # BorderStyle=3 puts a box behind the text. The color of the box is OutlineColour.
+                # So if BorderStyle=3:
+                #   PrimaryColour = Text Color
+                #   OutlineColour = Background Color
+                #   Outline = Background Padding (roughly)
+
+                # However, user wants BOTH Outline AND Background sometimes?
+                # Standard SRT/subtitles filter is limited. ASS supports it fully but force_style is a hack.
+                # Let's try to map as best as possible.
+
+                # Strategy:
+                # If BG enabled: Use BorderStyle=3. OutlineColour=BG Color.
+                #   We lose text outline in this mode usually with standard filters.
+                # If BG disabled: Use BorderStyle=1. OutlineColour=Outline Color.
+
+                # Wait, BorderStyle=4 is "Box with background" in libass? No.
+                # Default is 1 (Outline). 3 is Opaque Box.
+
+                if s.get('bg_enabled', False):
+                    border_style = 3
+                    # Background color (BackColour) isn't fully supported in all versions for Box?
+                    # Actually for BorderStyle=3, OutlineColour is the box background color.
+                    # Text outline is lost.
+
+                    # Wait, let's look at standard ASS.
+                    # BorderStyle=1: Outline + DropShadow
+                    # BorderStyle=3: Opaque Box
+
+                    # If we want BG, we use BorderStyle=3.
+                    # The color of the box is usually derived from OutlineColour?
+                    # Let's check docs: "BorderStyle: 1=Outline, 3=Opaque Box"
+
+                    # Mapping:
+                    # Fontname, Fontsize
+                    # PrimaryColour -> Text Color
+                    # OutlineColour -> Box Color (if BS=3) or Outline Color (if BS=1)
+                    # BackColour -> Shadow Color (if BS=1)
+
+                    # We might need to compromise or generate a full .ass file instead of .srt + force_style
+                    # for full control (Text Outline + Box Background).
+                    # But for now, let's stick to simple mapping.
+
+                    # If BG enabled, prioritize BG over Outline?
+                    # Or maybe we can use BackColour for background if alignment allows?
+
+                    # Let's stick to:
+                    # If BG enabled -> BorderStyle=3 (Box). Box color = bg_color. Text outline = lost.
+                    # If BG disabled -> BorderStyle=1 (Outline). Outline color = outline_color.
+
+                    if s.get('bg_enabled'):
+                        border_style = 3
+                        # In Qt alpha is 0-255 (255 opaque). In Settings we stored 0-255 (255 opaque?).
+                        # Wait, Qt QColor.alpha() is 255 for opaque.
+                        # settings['bg_alpha'] is from slider 0-255.
+                        # ASS Alpha: 00 (Opaque) - FF (Transparent).
+                        # So we need to invert.
+                        qt_alpha = s.get('bg_alpha', 160)
+                        ass_alpha = 255 - qt_alpha
+
+                        outline_color_ass = to_ass_color(s.get('bg_color', '#000000'), ass_alpha)
+
+                        # Apply to OutlineColour
+                        ass_outline_colour = outline_color_ass
+                        ass_outline_width = 0 # No extra expansion? Or use margin?
+
+                    else:
+                        border_style = 1
+                        outline_color_ass = to_ass_color(s.get('outline_color', '#000000'), 0)
+                        ass_outline_colour = outline_color_ass
+                        ass_outline_width = outline
+
+                else:
+                    # Default if logic fails
+                    border_style = 1
+                    ass_outline_colour = to_ass_color(s.get('outline_color', '#000000'), 0)
+                    ass_outline_width = outline
+
+                # Alignment
+                # ASS: 1=Left, 2=Center, 3=Right (Subtitles) - Legacy numpad?
+                # 1=SW, 2=S, 3=SE, 5=NW ...
+                # Standard alignment: 2 (Bottom Center).
+                # 10 (Center Center) ??
+                # Numpad layout:
+                # 7 8 9 (Top)
+                # 4 5 6 (Mid)
+                # 1 2 3 (Bot)
+
+                pos = s.get('position', 'Bottom')
+                if pos == 'Top':
+                    alignment = 8 # Top Center
+                elif pos == 'Center':
+                    alignment = 5 # Middle Center
+                else:
+                    alignment = 2 # Bottom Center
+
+                margin_v = s.get('margin_v', 48)
+
+                style = (
+                    f"Fontname={font_name},"
+                    f"Fontsize={font_size},"
+                    f"PrimaryColour={font_color},"
+                    f"OutlineColour={ass_outline_colour},"
+                    f"BorderStyle={border_style},"
+                    f"Outline={ass_outline_width},"
+                    f"Shadow=0,"
+                    f"Alignment={alignment},"
+                    f"MarginV={margin_v}"
+                )
+
                 filter_parts.append(f"[vcat]subtitles='{srt_escaped}':force_style='{style}'[vout]")
             else:
                 filter_parts.append("[vcat]null[vout]")
