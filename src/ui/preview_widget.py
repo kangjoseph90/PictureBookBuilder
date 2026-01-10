@@ -35,6 +35,7 @@ class PreviewWidget(QWidget):
         self.subtitle_clips: list[dict] = []  # [{'text': str, 'start': float, 'end': float}]
         self.images: list[str] = []  # Added for backward compatibility/internal use
         self.current_subtitle: Optional[str] = None
+        self.showing_placeholder = True
         
         self._setup_ui()
         self._setup_audio_mixer()
@@ -332,13 +333,19 @@ class PreviewWidget(QWidget):
         
         # Update image and subtitle if we have clips
         image = self._get_current_image(position)
-        if image != self.current_image:
+        
+        # Check if we need to force update to clear placeholder text
+        force_update = self.showing_placeholder
+        
+        if image != self.current_image or force_update:
             if image:
                 self.set_image(image)
             else:
-                # Clear image
+                # Clear image (and placeholder text if any)
                 self.image_label.clear()
                 self.current_image = None
+            
+            self.showing_placeholder = False
                 
         subtitle = self._get_current_subtitle(position)
         if subtitle != self.current_subtitle:
@@ -494,6 +501,7 @@ class PreviewWidget(QWidget):
         # Reset UI
         self.image_label.clear()
         self.image_label.setText("미리보기\n\n처리 완료 후 재생 버튼을 누르세요")
+        self.showing_placeholder = True
         self.subtitle_label.hide()
         self.subtitle_label.setText("")
         self.time_label.setText("0:00 / 0:00")
