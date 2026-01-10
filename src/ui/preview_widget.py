@@ -1,5 +1,8 @@
 """
-Preview Widget - Audio playback and image preview
+Preview Widget - Audio playback and image preview using AudioMixer
+
+Uses AudioMixer for real-time playback of timeline clips without
+pre-merging audio files.
 """
 from pathlib import Path
 from typing import Optional
@@ -14,9 +17,11 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
+from .audio_mixer import AudioMixer, ScheduledClip
+
 
 class PreviewWidget(QWidget):
-    """Widget for previewing images and audio playback"""
+    """Widget for previewing images and audio playback using AudioMixer"""
     
     # Signal emitted when playback position changes (position_ms)
     position_changed = pyqtSignal(int)
@@ -24,7 +29,7 @@ class PreviewWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.current_image: Optional[str] = None
-        self.audio_path: Optional[str] = None
+        self.audio_path: Optional[str] = None  # Kept for compatibility
         self.total_duration: float = 0.0
         self.image_clips: list[dict] = []  # [{'path': str, 'start': float, 'end': float}]
         self.subtitle_clips: list[dict] = []  # [{'text': str, 'start': float, 'end': float}]
@@ -32,7 +37,7 @@ class PreviewWidget(QWidget):
         self.current_subtitle: Optional[str] = None
         
         self._setup_ui()
-        self._setup_audio()
+        self._setup_audio_mixer()
     
     def _setup_ui(self):
         """Setup the UI"""
@@ -137,46 +142,70 @@ class PreviewWidget(QWidget):
         
         layout.addLayout(controls_layout)
     
-    def _setup_audio(self):
-        """Setup audio player"""
-        self.audio_output = QAudioOutput()
-        self.audio_output.setVolume(1.0)
-        
-        self.media_player = QMediaPlayer()
-        self.media_player.setAudioOutput(self.audio_output)
-        self.media_player.positionChanged.connect(self._on_position_changed)
-        self.media_player.durationChanged.connect(self._on_duration_changed)
-        self.media_player.playbackStateChanged.connect(self._on_state_changed)
-        self.media_player.errorOccurred.connect(self._on_error)
+    def _setup_audio_mixer(self):
+        """Setup AudioMixer for real-time clip playback"""
+        self.audio_mixer = AudioMixer(self)
+        self.audio_mixer.position_changed.connect(self._on_position_changed)
+        self.audio_mixer.duration_changed.connect(self._on_duration_changed_from_mixer)
+        self.audio_mixer.playback_state_changed.connect(self._on_state_changed_from_mixer)
         
         self.is_seeking = False
+        
+        # For compatibility with external code that accesses media_player
+        # We provide a minimal interface
+        self._dummy_media_player = _DummyMediaPlayer(self.audio_mixer)
+    
+    @property
+    def media_player(self):
+        """Compatibility property - returns wrapper around AudioMixer"""
+        return self._dummy_media_player
+    
+    def set_audio_clips(self, clips: list[ScheduledClip], speaker_audio_paths: dict[str, str]):
+        """Set audio clips for playback using AudioMixer.
+        
+        Args:
+            clips: List of ScheduledClip objects
+            speaker_audio_paths: Dict mapping speaker names to audio file paths
+        """
+        self.audio_mixer.set_speaker_audio_paths(speaker_audio_paths)
+        self.audio_mixer.set_clips(clips)
+        self.status_label.setText("준비됨")
+        self.audio_path = "mixer"  # Mark as ready for playback
+    
+    def update_audio_clip(self, clip: ScheduledClip):
+        """Update a single audio clip (for real-time editing).
+        
+        Args:
+            clip: Updated clip data
+        """
+        self.audio_mixer.update_clip(clip)
+        
+    def remove_audio_clip(self, clip_id: str):
+        """Remove an audio clip.
+        
+        Args:
+            clip_id: ID of the clip to remove
+        """
+        self.audio_mixer.remove_clip(clip_id)
     
     def set_audio(self, audio_path: str, initial_pos_ms: int = 0):
-        """Set the audio file to play"""
-        self.audio_path = audio_path
+        """Legacy method - now handled by set_audio_clips.
         
-        if not audio_path or not Path(audio_path).exists():
-            self.status_label.setText("오디오 없음")
+        This method is kept for backwards compatibility but does nothing
+        when using AudioMixer. Use set_audio_clips() instead.
+        """
+        # When using AudioMixer, audio is set via set_audio_clips
+        # This is kept for compatibility with code that checks audio_path
+        if audio_path == "mixer":
+            self.audio_path = audio_path
+            if initial_pos_ms > 0:
+                self.audio_mixer.seek(initial_pos_ms / 1000.0)
             return
-        
-        # If we want to restore position, save it for later when duration is known
+            
+        # Legacy path - mark as having audio but don't actually load
+        self.audio_path = audio_path
         if initial_pos_ms > 0:
-            self._target_pos_ms = initial_pos_ms
-        else:
-            self._target_pos_ms = None
-        
-        # Stop playback and clear source first to force reload
-        # This prevents QMediaPlayer from caching the old file
-        self.media_player.stop()
-        self.media_player.setSource(QUrl())  # Clear source
-        
-        url = QUrl.fromLocalFile(audio_path)
-        self.media_player.setSource(url)
-        self.status_label.setText("준비됨")
-        
-        # Only show prompt if we are not restoring a position
-        if initial_pos_ms <= 0:
-            self.image_label.setText("재생 버튼을 누르세요")
+            self.audio_mixer.seek(initial_pos_ms / 1000.0)
             
     def set_images(self, image_paths: list[str], timestamps: list[float]):
         """Set images with specific start timestamps
@@ -344,16 +373,11 @@ class PreviewWidget(QWidget):
             img_h - sub_h - 30
         )
     
-    def _on_duration_changed(self, duration: int):
-        """Handle duration change"""
-        self.total_duration = duration / 1000.0
-        self.time_label.setText(f"0:00 / {self._format_time(duration)}")
-        
-        # Restore position if we have a target
-        if hasattr(self, '_target_pos_ms') and self._target_pos_ms is not None:
-            if self._target_pos_ms < duration:
-                self.media_player.setPosition(self._target_pos_ms)
-            self._target_pos_ms = None
+    def _on_duration_changed_from_mixer(self, duration_sec: float):
+        """Handle duration change from AudioMixer"""
+        self.total_duration = duration_sec
+        duration_ms = int(duration_sec * 1000)
+        self.time_label.setText(f"0:00 / {self._format_time(duration_ms)}")
     
     def set_total_duration(self, duration_sec: float):
         """Set total duration from timeline (overrides audio-based duration)
@@ -364,24 +388,24 @@ class PreviewWidget(QWidget):
         Args:
             duration_sec: Total duration in seconds
         """
-        if duration_sec > self.total_duration:
-            self.total_duration = duration_sec
-            duration_ms = int(duration_sec * 1000)
-            self.time_label.setText(
-                f"{self._format_time(self.media_player.position())} / {self._format_time(duration_ms)}"
-            )
+        self.total_duration = duration_sec
+        self.audio_mixer.set_duration(duration_sec)
+        duration_ms = int(duration_sec * 1000)
+        self.time_label.setText(
+            f"{self._format_time(self.audio_mixer.position_ms)} / {self._format_time(duration_ms)}"
+        )
     
-    def _on_state_changed(self, state):
-        """Handle playback state change"""
-        if state == QMediaPlayer.PlaybackState.PlayingState:
+    def _on_state_changed_from_mixer(self, state: str):
+        """Handle playback state change from AudioMixer"""
+        if state == 'playing':
             self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
             self.status_label.setText("재생 중")
             self.status_label.setStyleSheet("color: #4CAF50;")
-        elif state == QMediaPlayer.PlaybackState.PausedState:
+        elif state == 'paused':
             self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.status_label.setText("일시정지")
             self.status_label.setStyleSheet("color: orange;")
-        else:
+        else:  # stopped
             self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.status_label.setText("정지")
             self.status_label.setStyleSheet("color: gray;")
@@ -393,34 +417,31 @@ class PreviewWidget(QWidget):
     
     def _toggle_play(self):
         """Toggle playback"""
-        if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.media_player.pause()
+        if self.audio_mixer.is_playing:
+            self.audio_mixer.pause()
         else:
-            self.media_player.play()
+            self.audio_mixer.play()
     
     def _stop(self):
         """Stop playback"""
-        self.media_player.stop()
+        self.audio_mixer.stop()
         self.seek_slider.setValue(0)
-        # We don't necessarily want to reset image on stop, 
-        # but let's sync with start of audio if available
-        self.media_player.setPosition(0)
     
     def _go_to_start(self):
         """Skip to the beginning"""
-        self.media_player.setPosition(0)
+        self.audio_mixer.seek(0)
     
     def _go_to_end(self):
         """Skip to the end"""
         if self.total_duration > 0:
-            self.media_player.setPosition(int(self.total_duration * 1000))
+            self.audio_mixer.seek(self.total_duration)
             
     def _on_speed_changed(self, index: int):
         """Handle playback speed change"""
         speed_text = self.speed_combo.currentText().replace("x", "")
         try:
             speed = float(speed_text)
-            self.media_player.setPlaybackRate(speed)
+            self.audio_mixer.set_playback_rate(speed)
         except ValueError:
             pass
     
@@ -433,7 +454,7 @@ class PreviewWidget(QWidget):
         self.is_seeking = False
         value = self.seek_slider.value()
         position = int(value / 1000 * self.total_duration * 1000)
-        self.media_player.setPosition(position)
+        self.audio_mixer.seek(position / 1000.0)
     
     def _on_seek(self, value: int):
         """Handle seek slider drag"""
@@ -458,8 +479,8 @@ class PreviewWidget(QWidget):
     def clear_preview(self):
         """Clear all preview data and reset to initial state"""
         # Stop playback
-        self.media_player.stop()
-        self.media_player.setSource(QUrl())
+        self.audio_mixer.stop()
+        self.audio_mixer.set_clips([])
         
         # Clear data
         self.audio_path = None
@@ -483,4 +504,56 @@ class PreviewWidget(QWidget):
     
     def cleanup(self):
         """Cleanup resources"""
-        self.media_player.stop()
+        self.audio_mixer.cleanup()
+
+
+class _DummyMediaPlayer:
+    """
+    Compatibility wrapper to provide a media_player-like interface
+    that delegates to AudioMixer. This allows external code that
+    accesses preview_widget.media_player to continue working.
+    """
+    
+    def __init__(self, mixer: AudioMixer):
+        self._mixer = mixer
+        # Connect signals for compatibility
+        self.positionChanged = mixer.position_changed
+        
+    def position(self) -> int:
+        """Get current position in milliseconds"""
+        return self._mixer.position_ms
+    
+    def setPosition(self, position_ms: int):
+        """Set position in milliseconds"""
+        self._mixer.seek(position_ms / 1000.0)
+        
+    def play(self):
+        """Start playback"""
+        self._mixer.play()
+        
+    def pause(self):
+        """Pause playback"""
+        self._mixer.pause()
+        
+    def stop(self):
+        """Stop playback"""
+        self._mixer.stop()
+        
+    def setPlaybackRate(self, rate: float):
+        """Set playback rate"""
+        self._mixer.set_playback_rate(rate)
+        
+    def playbackState(self):
+        """Get playback state - returns compatible state object"""
+        if self._mixer.is_playing:
+            return QMediaPlayer.PlaybackState.PlayingState
+        else:
+            return QMediaPlayer.PlaybackState.StoppedState
+            
+    def setSource(self, url):
+        """Compatibility method - does nothing with AudioMixer"""
+        pass
+        
+    def errorString(self) -> str:
+        """Return empty error string"""
+        return ""

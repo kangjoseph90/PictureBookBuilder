@@ -1269,105 +1269,74 @@ class MainWindow(QMainWindow):
         return waveform
     
     def _generate_preview_audio(self, result: dict):
-        """Generate a temporary audio file for preview playback"""
+        """Setup AudioMixer with clips for preview playback"""
         try:
-            from pydub import AudioSegment
-            import tempfile
+            from .audio_mixer import ScheduledClip
             
             aligned = result.get('aligned', [])
             speaker_audio_map = result.get('speaker_audio_map', {})
-            gap = DEFAULT_GAP_SECONDS
             
             if not aligned:
                 return
             
-            self.statusBar().showMessage("미리보기 오디오 생성 중...")
+            self.statusBar().showMessage("미리보기 오디오 준비 중...")
             
-            # Load speaker audio files
-            speaker_audio: dict[str, AudioSegment] = {}
-            for speaker, audio_path in speaker_audio_map.items():
-                if audio_path:
-                    speaker_audio[speaker] = AudioSegment.from_file(audio_path)
+            # Build scheduled clips from timeline clips
+            scheduled_clips = []
+            audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
             
-            # Create merged audio
-            result_audio = AudioSegment.empty()
-            silence = AudioSegment.silent(duration=int(gap * 1000))
+            for clip in audio_clips:
+                scheduled_clips.append(ScheduledClip(
+                    clip_id=clip.id,
+                    speaker=clip.speaker,
+                    timeline_start=clip.start,
+                    timeline_end=clip.start + clip.duration,
+                    source_offset=clip.offset,
+                    source_path=speaker_audio_map.get(clip.speaker, ""),
+                    duration=clip.duration
+                ))
             
-            for i, segment in enumerate(aligned):
-                speaker = segment.dialogue.speaker
-                if speaker in speaker_audio:
-                    audio = speaker_audio[speaker]
-                    
-                    start_ms = max(0, int(segment.start_time * 1000))
-                    end_ms = min(len(audio), int(segment.end_time * 1000))
-                    clip = audio[start_ms:end_ms]
-                    
-                    result_audio += clip
-                    if i < len(aligned) - 1:
-                        result_audio += silence
+            # Set up the AudioMixer
+            self.preview_widget.set_audio_clips(scheduled_clips, speaker_audio_map)
             
-            # Save to temp file
-            temp_dir = tempfile.gettempdir()
-            self.preview_audio_path = os.path.join(temp_dir, "pbb_preview.wav")
-            result_audio.export(self.preview_audio_path, format='wav')
-            
-            # Save position if available
-            current_playhead = self.timeline_widget.canvas.playhead_time if hasattr(self, 'timeline_widget') else 0
-            
-            # Set preview widget audio
-            self.preview_widget.set_audio(self.preview_audio_path, initial_pos_ms=int(current_playhead * 1000))
+            # Calculate total timeline duration from ALL clips
+            all_clips = self.timeline_widget.canvas.clips
+            total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
+            self.preview_widget.set_total_duration(total_duration)
             
             # Connect preview position to timeline playhead (only once)
             if not hasattr(self, '_preview_connected') or not self._preview_connected:
-                self.preview_widget.media_player.positionChanged.connect(self._on_preview_position_changed)
+                self.preview_widget.audio_mixer.position_changed.connect(self._on_preview_position_changed)
                 self._preview_connected = True
             
-            # Set images with proper timestamps synced to audio clips
-            if self.image_folder:
-                from pathlib import Path as P
-                image_folder = P(self.image_folder)
-                images = []
-                for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-                    images.extend(sorted(image_folder.glob(ext)))
-                if images:
-                    # Calculate timestamps based on clip positions
-                    # Get clip start times from timeline
-                    audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
-                    
-                    num_images_to_use = min(len(images), len(audio_clips))
-                    image_timestamps = []
-                    
-                    for i in range(num_images_to_use):
-                        image_timestamps.append(audio_clips[i].start)
-                    
-                    self.preview_widget.set_images(
-                        [str(img) for img in images[:num_images_to_use]],
-                        timestamps=image_timestamps
-                    )
+            # Sync timeline clips to preview for image/subtitle display
+            self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
             
             self.statusBar().showMessage("미리보기 준비 완료")
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.statusBar().showMessage(f"미리보기 오디오 생성 실패: {str(e)}")
+            self.statusBar().showMessage(f"미리보기 오디오 준비 실패: {str(e)}")
     
     def _on_timeline_playhead_changed(self, time: float):
         """Handle playhead change from timeline - sync to preview"""
         if hasattr(self, 'preview_widget') and self.preview_widget.audio_path:
             # Convert time to milliseconds and seek preview
             position_ms = int(time * 1000)
-            self.preview_widget.media_player.setPosition(position_ms)
+            self.preview_widget.audio_mixer.seek(time)
     
     def _on_preview_position_changed(self, position_ms: int):
         """Handle position change from preview - sync to timeline"""
         if hasattr(self, 'timeline_widget'):
             time_sec = position_ms / 1000.0
-            self.timeline_widget.set_playhead(time_sec)
+            # Only auto-scroll when playing
+            is_playing = self.preview_widget.audio_mixer.is_playing
+            self.timeline_widget.set_playhead(time_sec, auto_scroll=is_playing)
     
     
     def _on_clip_editing(self, clip_id: str):
-        """Handle real-time clip boundary change - fast waveform update only"""
+        """Handle real-time clip boundary change - update waveform and AudioMixer"""
         # Find the editing clip
         clip = None
         for c in self.timeline_widget.canvas.clips:
@@ -1383,11 +1352,25 @@ class MainWindow(QMainWindow):
         # Only audio clips should generate/display waveforms.
         if getattr(clip, 'clip_type', None) != "audio":
             return
+        
+        # Update AudioMixer with the modified clip in real-time
+        from .audio_mixer import ScheduledClip
+        speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
+        
+        scheduled_clip = ScheduledClip(
+            clip_id=clip.id,
+            speaker=clip.speaker,
+            timeline_start=clip.start,
+            timeline_end=clip.start + clip.duration,
+            source_offset=clip.offset,
+            source_path=speaker_audio_map.get(clip.speaker, ""),
+            duration=clip.duration
+        )
+        self.preview_widget.update_audio_clip(scheduled_clip)
 
         # Update waveform only (fast path) using offset + duration
         try:
             # Check cache for speaker audio
-            speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
             if clip.speaker not in self.speaker_audio_cache:
                 audio_path = speaker_audio_map.get(clip.speaker)
                 if audio_path:
@@ -1416,7 +1399,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_clip_edited(self, clip_id: str):
-        """Handle final clip boundary edit - sync to result_data and regenerate audio"""
+        """Handle final clip boundary edit - sync to result_data and update AudioMixer"""
         # Find the edited clip
         clip = None
         for c in self.timeline_widget.canvas.clips:
@@ -1443,26 +1426,66 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         
-        # Audio regeneration is only strictly necessary for audio clips or if playhead/timing changed
-        # But for simplicity, we call it to ensure everything is in sync
+        # Update AudioMixer for audio clips (already updated in _on_clip_editing, but finalize here)
         if clip.clip_type == "audio":
-            self._regenerate_preview_from_clips()
-        else:
-            # For non-audio, just updating clips in preview is enough for images/subs
-            pass
+            from .audio_mixer import ScheduledClip
+            speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
+            
+            scheduled_clip = ScheduledClip(
+                clip_id=clip.id,
+                speaker=clip.speaker,
+                timeline_start=clip.start,
+                timeline_end=clip.start + clip.duration,
+                source_offset=clip.offset,
+                source_path=speaker_audio_map.get(clip.speaker, ""),
+                duration=clip.duration
+            )
+            self.preview_widget.update_audio_clip(scheduled_clip)
+            
+            self.preview_widget.update_audio_clip(scheduled_clip)
+            
+        # Update total duration for ALL clip types
+        all_clips = self.timeline_widget.canvas.clips
+        total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
+        self.preview_widget.set_total_duration(total_duration)
     
     def _on_clip_moved(self, clip_id: str, new_start: float):
         """Handle clip position change"""
         self.statusBar().showMessage(f"클립 이동됨: {new_start:.2f}s")
         
+        # Find the moved clip
+        clip = None
+        for c in self.timeline_widget.canvas.clips:
+            if c.id == clip_id:
+                clip = c
+                break
+        
         # Sync to preview widget
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         
-        # Note: Clip position changes only affect timeline playback timing
-        # The source audio boundaries remain the same
-        # Regenerate preview with new timeline positions
-        self._regenerate_preview_from_clips()
+        # Update AudioMixer for audio clips
+        if clip and clip.clip_type == "audio":
+            from .audio_mixer import ScheduledClip
+            speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
+            
+            scheduled_clip = ScheduledClip(
+                clip_id=clip.id,
+                speaker=clip.speaker,
+                timeline_start=clip.start,
+                timeline_end=clip.start + clip.duration,
+                source_offset=clip.offset,
+                source_path=speaker_audio_map.get(clip.speaker, ""),
+                duration=clip.duration
+            )
+            self.preview_widget.update_audio_clip(scheduled_clip)
+            
+            self.preview_widget.update_audio_clip(scheduled_clip)
+            
+        # Update total duration for ALL clip types
+        all_clips = self.timeline_widget.canvas.clips
+        total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
+        self.preview_widget.set_total_duration(total_duration)
     
     def _on_clip_double_clicked(self, clip_id: str):
         """Handle clip double click - edit subtitle text"""
@@ -2266,27 +2289,30 @@ class MainWindow(QMainWindow):
     def _delete_clip(self, clip):
         """Delete a clip from the timeline"""
         if clip in self.timeline_widget.canvas.clips:
+            # Remove from AudioMixer if audio clip
+            if clip.clip_type == "audio":
+                self.preview_widget.remove_audio_clip(clip.id)
+            
             self.timeline_widget.canvas.clips.remove(clip)
             self.timeline_widget.canvas.update()
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
             self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+            
+            # Update total duration
+            all_clips = self.timeline_widget.canvas.clips
+            if all_clips:
+                total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
+                self.preview_widget.set_total_duration(total_duration)
+            
             self.statusBar().showMessage(f"클립이 삭제되었습니다: {clip.name}")
     
     def _regenerate_preview_from_clips(self):
-        """Regenerate preview audio based on current clip data"""
+        """Rebuild AudioMixer with all current clips"""
         try:
-            from pydub import AudioSegment
-            import tempfile
+            from .audio_mixer import ScheduledClip
             
             # Use self.speaker_audio_map directly (works for both fresh and loaded projects)
             speaker_audio_map = self.speaker_audio_map or {}
-
-            
-            # Load speaker audio files
-            speaker_audio: dict[str, AudioSegment] = {}
-            for speaker, audio_path in speaker_audio_map.items():
-                if audio_path:
-                    speaker_audio[speaker] = AudioSegment.from_file(audio_path)
             
             # Get audio clips sorted by start time
             audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
@@ -2295,69 +2321,37 @@ class MainWindow(QMainWindow):
             if not audio_clips:
                 return
             
+            # Build scheduled clips for AudioMixer
+            scheduled_clips = []
+            for clip in audio_clips:
+                scheduled_clips.append(ScheduledClip(
+                    clip_id=clip.id,
+                    speaker=clip.speaker,
+                    timeline_start=clip.start,
+                    timeline_end=clip.start + clip.duration,
+                    source_offset=clip.offset,
+                    source_path=speaker_audio_map.get(clip.speaker, ""),
+                    duration=clip.duration
+                ))
+            
             # Calculate total timeline duration from ALL clips (audio, subtitle, image)
             all_clips = self.timeline_widget.canvas.clips
             total_timeline_duration = max((c.start + c.duration for c in all_clips), default=0.0)
             
-            # Build merged audio based on clip data
-            result_audio = AudioSegment.empty()
-            current_pos = 0.0
-            
-            for clip in audio_clips:
-                if clip.speaker not in speaker_audio:
-                    continue
-                
-                audio = speaker_audio[clip.speaker]
-                
-                # Extract using offset and duration
-                segment_end = clip.offset + clip.duration
-                
-                start_ms = max(0, int(clip.offset * 1000))
-                end_ms = min(len(audio), int(segment_end * 1000))
-                clip_audio = audio[start_ms:end_ms]
-                
-                # If clip duration is longer than source audio, pad with silence
-                # This happens when user extends the clip beyond the source audio
-                clip_duration_ms = int(clip.duration * 1000)
-                actual_clip_length_ms = len(clip_audio)
-                if clip_duration_ms > actual_clip_length_ms:
-                    padding_needed = clip_duration_ms - actual_clip_length_ms
-                    clip_audio += AudioSegment.silent(duration=padding_needed)
-                
-                # Add silence gap if needed (for gaps between clips on timeline)
-                gap_duration = int((clip.start - current_pos) * 1000)
-                if gap_duration > 0:
-                    result_audio += AudioSegment.silent(duration=gap_duration)
-                
-                result_audio += clip_audio
-                # Use clip's timeline position + duration (not extracted audio length)
-                current_pos = clip.start + clip.duration
-            
-            # Pad with silence to reach total timeline duration
-            # This ensures preview plays all the way to the end of the timeline
-            current_length_sec = len(result_audio) / 1000.0
-            if total_timeline_duration > current_length_sec:
-                padding_ms = int((total_timeline_duration - current_length_sec) * 1000)
-                result_audio += AudioSegment.silent(duration=padding_ms)
-            
             # Save current playhead position to restore after update
             current_playhead = self.timeline_widget.canvas.playhead_time
             
-            # Save and update preview
-            temp_dir = tempfile.gettempdir()
-            self.preview_audio_path = os.path.join(temp_dir, "pbb_preview.wav")
-            result_audio.export(self.preview_audio_path, format='wav')
+            # Set up the AudioMixer with new clips
+            self.preview_widget.set_audio_clips(scheduled_clips, speaker_audio_map)
             
-            # Update preview widget with timeline-based duration
-            self.preview_widget.set_audio(self.preview_audio_path, initial_pos_ms=int(current_playhead * 1000))
-            
-            # Update preview widget total duration to match timeline (in case audio is shorter)
+            # Update preview widget total duration to match timeline
             self.preview_widget.set_total_duration(total_timeline_duration)
+            
+            # Restore playhead position
+            self.preview_widget.audio_mixer.seek(current_playhead)
             
             # Also ensure timeline playhead stays in sync (UI side)
             self.timeline_widget.set_playhead(current_playhead)
-
-            
             
             self.statusBar().showMessage("미리보기 오디오 업데이트됨")
             
@@ -2365,22 +2359,6 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             self.statusBar().showMessage(f"오디오 재생성 실패: {str(e)}")
-    
-
-    
-    def _on_timeline_playhead_changed(self, time_seconds: float):
-        """Handle playhead change from timeline - sync to preview"""
-        position_ms = int(time_seconds * 1000)
-        self.preview_widget.media_player.setPosition(position_ms)
-    
-    def _on_preview_position_changed(self, position_ms: int):
-        """Handle position change from preview - sync to timeline"""
-        from PyQt6.QtMultimedia import QMediaPlayer
-        
-        time_seconds = position_ms / 1000.0
-        # Only auto-scroll when playing
-        is_playing = self.preview_widget.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
-        self.timeline_widget.set_playhead(time_seconds, auto_scroll=is_playing)
     
     def _export_srt(self):
         """Export SRT file"""
@@ -2506,10 +2484,22 @@ class MainWindow(QMainWindow):
         image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
         subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
         
+        # Generate temp audio file for rendering
+        import tempfile
+        import os
+        try:
+            fd, temp_audio_path = tempfile.mkstemp(suffix='.wav')
+            os.close(fd)
+            self._create_merged_audio(temp_audio_path)
+            self._temp_render_audio = temp_audio_path
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"임시 오디오 생성 실패: {str(e)}")
+            return
+
         # Create and start render thread
         self.render_thread = RenderThread(
             image_clips=image_clips,
-            audio_path=self.preview_audio_path,  # Use merged preview audio
+            audio_path=self._temp_render_audio,
             subtitle_clips=subtitle_clips,
             output_path=path
         )
@@ -2517,50 +2507,64 @@ class MainWindow(QMainWindow):
         self.render_thread.finished.connect(self._on_render_finished)
         self.render_thread.start()
     
+    def _create_merged_audio(self, output_path: str):
+        """Create a merged WAV file from timeline audio clips"""
+        from pydub import AudioSegment
+        
+        speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
+
+        # Load speaker audio files
+        speaker_audio: dict[str, AudioSegment] = {}
+        for speaker, audio_path in speaker_audio_map.items():
+            if audio_path:
+                speaker_audio[speaker] = AudioSegment.from_file(audio_path)
+        
+        # Get audio clips from timeline
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
+        audio_clips.sort(key=lambda c: c.start)
+        
+        # Create merged audio
+        result_audio = AudioSegment.empty()
+        current_pos = 0.0
+        
+        for clip in audio_clips:
+            speaker = clip.speaker
+            if speaker in speaker_audio:
+                audio = speaker_audio[speaker]
+                
+                # Add silence gap if needed
+                gap_duration = int((clip.start - current_pos) * 1000)
+                if gap_duration > 0:
+                    result_audio += AudioSegment.silent(duration=gap_duration)
+    
+                # Calculate original segment duration
+                padded_duration_ms = int(clip.duration * 1000)
+                segment_duration_ms = padded_duration_ms
+                segment_end = clip.offset + (segment_duration_ms / 1000.0)
+                
+                # Extract segment from source audio
+                start_ms = max(0, int(clip.offset * 1000))
+                end_ms = min(len(audio), int(segment_end * 1000))
+                audio_clip = audio[start_ms:end_ms]
+                
+                result_audio += audio_clip
+                current_pos = clip.start + len(audio_clip) / 1000.0
+        
+        # Pad with silence to match total timeline duration (e.g. if images extend beyond audio)
+        total_timeline_duration = max((c.start + c.duration for c in self.timeline_widget.canvas.clips), default=0.0)
+        current_audio_duration = len(result_audio) / 1000.0
+        
+        if total_timeline_duration > current_audio_duration:
+            silence_gap = int((total_timeline_duration - current_audio_duration) * 1000)
+            if silence_gap > 0:
+                result_audio += AudioSegment.silent(duration=silence_gap)
+        
+        result_audio.export(output_path, format='wav')
+
     def _export_audio_only(self, path: str):
         """Export audio-only .wav file"""
         try:
-            from pydub import AudioSegment
-            
-            speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
-
-            # Load speaker audio files
-            speaker_audio: dict[str, AudioSegment] = {}
-            for speaker, audio_path in speaker_audio_map.items():
-                if audio_path:
-                    speaker_audio[speaker] = AudioSegment.from_file(audio_path)
-            
-            # Get audio clips from timeline
-            audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
-            audio_clips.sort(key=lambda c: c.start)
-            
-            # Create merged audio
-            result_audio = AudioSegment.empty()
-            current_pos = 0.0
-            
-            for clip in audio_clips:
-                speaker = clip.speaker
-                if speaker in speaker_audio:
-                    audio = speaker_audio[speaker]
-                    
-                    # Add silence gap if needed
-                    gap_duration = int((clip.start - current_pos) * 1000)
-                    if gap_duration > 0:
-                        result_audio += AudioSegment.silent(duration=gap_duration)
-        
-                    # Calculate original segment duration
-                    padded_duration_ms = int(clip.duration * 1000)
-                    segment_duration_ms = padded_duration_ms
-                    segment_end = clip.offset + (segment_duration_ms / 1000.0)
-                    
-                    start_ms = max(0, int(clip.offset * 1000))
-                    end_ms = min(len(audio), int(segment_end * 1000))
-                    audio_clip = audio[start_ms:end_ms]
-                    
-                    result_audio += audio_clip
-                    current_pos = clip.start + len(audio_clip) / 1000.0
-            
-            result_audio.export(path, format='wav')
+            self._create_merged_audio(path)
             QMessageBox.information(self, "저장 완료", f"파일이 저장되었습니다:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "오류", f"오디오 내보내기 실패: {str(e)}")
@@ -2578,6 +2582,16 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("렌더링 실패")
             QMessageBox.critical(self, "오류", message)
+            
+        # Cleanup temp audio
+        if hasattr(self, '_temp_render_audio') and self._temp_render_audio:
+            import os
+            try:
+                if os.path.exists(self._temp_render_audio):
+                    os.remove(self._temp_render_audio)
+            except:
+                pass
+            self._temp_render_audio = None
     def _new_project(self):
         """Create a new project"""
         from PyQt6.QtWidgets import QMessageBox
