@@ -18,7 +18,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPalette, QFontMetrics
 from typing import TYPE_CHECKING
 
+import copy
 from .timeline_widget import TimelineWidget
+from .clip import TimelineClip
+from .undo_system import UndoStack, ModifyClipsCommand, AddRemoveClipsCommand, ReplaceAllClipsCommand, MacroCommand
 from .preview_widget import PreviewWidget
 from .settings_widget import SettingsWidget, SettingsDialog
 from .theme import ModernDarkTheme
@@ -492,6 +495,9 @@ class MainWindow(QMainWindow):
         # Runtime configuration
         self.runtime_config = get_config()
         
+        # Undo system
+        self.undo_stack = UndoStack()
+
         self._setup_menu_bar()
         self._setup_ui()
 
@@ -558,6 +564,21 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
+        # --- Edit Menu ---
+        edit_menu = menu_bar.addMenu("편집(&E)")
+
+        self.undo_action = QAction("실행 취소(&U)", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self._undo)
+        self.undo_action.setEnabled(False)
+        edit_menu.addAction(self.undo_action)
+
+        self.redo_action = QAction("다시 실행(&R)", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self._redo)
+        self.redo_action.setEnabled(False)
+        edit_menu.addAction(self.redo_action)
+
         # --- Project Menu ---
         project_menu = menu_bar.addMenu("프로젝트(&P)")
         
@@ -808,6 +829,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.clip_moved.connect(self._on_clip_moved)
         self.timeline_widget.canvas.clip_double_clicked.connect(self._on_clip_double_clicked)
         self.timeline_widget.canvas.clip_context_menu.connect(self._on_clip_context_menu)
+        self.timeline_widget.canvas.history_command_generated.connect(self._on_history_command)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -834,6 +856,52 @@ class MainWindow(QMainWindow):
     def _create_bottom_controls(self):
         """Create controls in status bar - Removed as they are now in Toolbar/Menu"""
         pass
+
+    def _update_undo_redo_actions(self):
+        """Update enabled state of Undo/Redo actions"""
+        self.undo_action.setEnabled(self.undo_stack.can_undo())
+        self.undo_action.setText(f"실행 취소({self.undo_stack.undo_stack[-1].text()})" if self.undo_stack.can_undo() else "실행 취소")
+        self.redo_action.setEnabled(self.undo_stack.can_redo())
+        self.redo_action.setText(f"다시 실행({self.undo_stack.redo_stack[-1].text()})" if self.undo_stack.can_redo() else "다시 실행")
+
+    def _undo(self):
+        """Undo last action"""
+        if self.undo_stack.can_undo():
+            text = self.undo_stack.undo()
+            self._update_undo_redo_actions()
+            self.statusBar().showMessage(f"실행 취소됨: {text}")
+
+    def _redo(self):
+        """Redo last action"""
+        if self.undo_stack.can_redo():
+            text = self.undo_stack.redo()
+            self._update_undo_redo_actions()
+            self.statusBar().showMessage(f"다시 실행됨: {text}")
+
+    def _on_undo_redo_callback(self):
+        """Callback after undo/redo to refresh UI"""
+        self.timeline_widget.canvas.update()
+        self.timeline_widget.canvas._update_total_duration()
+
+        # Sync to preview
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self._regenerate_preview_from_clips() # Might be heavy but ensures audio sync
+
+    def _on_history_command(self, action_type, data):
+        """Handle history command generation from TimelineCanvas"""
+        cmd = None
+        if action_type == 'modify':
+            cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                data['modifications'],
+                data['description'],
+                callback=self._on_undo_redo_callback
+            )
+
+        if cmd:
+            self.undo_stack.push(cmd)
+            self._update_undo_redo_actions()
     
     def _load_script(self):
         """Load script file and detect speakers"""
@@ -967,7 +1035,6 @@ class MainWindow(QMainWindow):
     
     def _apply_images_to_timeline(self):
         """Apply images from list to timeline, mapping 1:1 with audio clips"""
-        from .timeline_widget import TimelineClip
         
         # Get audio clips from timeline
         audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
@@ -1002,10 +1069,7 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
         
-        # Remove existing image clips
-        self.timeline_widget.canvas.clips = [
-            c for c in self.timeline_widget.canvas.clips if c.clip_type != "image"
-        ]
+        new_image_clips = []
         
         # Map images to audio clips 1:1
         for i, audio_clip in enumerate(audio_clips_sorted):
@@ -1023,7 +1087,7 @@ class MainWindow(QMainWindow):
                 img_end = audio_clip.start + audio_clip.duration
             
             img_clip = TimelineClip(
-                id=f"img_{i}",
+                id=self._make_unique_clip_id(f"img_{i}"),
                 name=Path(img_path).name,
                 start=img_start,
                 duration=img_end - img_start,
@@ -1033,8 +1097,20 @@ class MainWindow(QMainWindow):
                 waveform=[],
                 image_path=img_path
             )
-            self.timeline_widget.canvas.clips.append(img_clip)
-        
+            new_image_clips.append(img_clip)
+
+        # Create undo command
+        cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=new_image_clips,
+            removed=existing_image_clips,
+            description="Apply images to timeline",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+
         # Update timeline
         self.timeline_widget.canvas._update_total_duration()
         self.timeline_widget.canvas.update()
@@ -1511,6 +1587,8 @@ class MainWindow(QMainWindow):
         )
         
         if ok and new_text:
+            old_state = copy.deepcopy(clip)
+
             clip.name = new_text
             # Also update the actual data
             if self.result_data and clip.segment_index >= 0:
@@ -1518,6 +1596,18 @@ class MainWindow(QMainWindow):
                 if clip.segment_index < len(aligned):
                     aligned[clip.segment_index].dialogue.text = new_text
             
+            new_state = copy.deepcopy(clip)
+
+            # Undo Command
+            cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                [(clip.id, old_state, new_state)],
+                description="Edit subtitle text",
+                callback=self._on_undo_redo_callback
+            )
+            self.undo_stack.push(cmd)
+            self._update_undo_redo_actions()
+
             self.timeline_widget.canvas.update()
             self.statusBar().showMessage("자막이 수정되었습니다.")
             
@@ -1698,13 +1788,16 @@ class MainWindow(QMainWindow):
         # Save original end time before modifying
         original_end = clip.start + clip.duration
         
+        old_clip_state = copy.deepcopy(clip)
+
         # Update original clip (first segment ends at split_time)
         clip.name = text1
         clip.duration = split_time - clip.start
         clip.words = words1
         
+        new_clip_state = copy.deepcopy(clip)
+
         # Create new clip (second segment starts at split_time)
-        from ui.timeline_widget import TimelineClip
         new_id = self._make_unique_clip_id(f"{clip.id}_split")
         new_duration = original_end - split_time
         
@@ -1723,7 +1816,29 @@ class MainWindow(QMainWindow):
             words=words2
         )
         
+        # Create Undo Commands
+        modify_cmd = ModifyClipsCommand(
+            self.timeline_widget.canvas,
+            [(clip.id, old_clip_state, new_clip_state)],
+            description="Split subtitle (modify original)"
+        )
+
+        add_cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[new_clip],
+            removed=[],
+            description="Split subtitle (add new)"
+        )
+
+        # Execute actions manually first since we already modified 'clip' in place above,
+        # but we haven't added 'new_clip' yet.
         self.timeline_widget.canvas.clips.append(new_clip)
+
+        # Push composite command
+        macro_cmd = MacroCommand([modify_cmd, add_cmd], description="Split subtitle")
+        self.undo_stack.push(macro_cmd)
+        self._update_undo_redo_actions()
+
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -1837,6 +1952,8 @@ class MainWindow(QMainWindow):
              'end_time': clip2.offset + clip2.duration, 'words': clip2.words}
         )
         
+        old_clip1_state = copy.deepcopy(clip1)
+
         # Update first clip - keep timeline start, update duration, preserve offset
         clip1.name = merged['text']
         # Calculate new timeline duration: from clip1.start to clip2's end
@@ -1845,8 +1962,29 @@ class MainWindow(QMainWindow):
         clip1.words = merged['words']
         # clip1.offset stays the same (it's the original start time)
         
+        new_clip1_state = copy.deepcopy(clip1)
+
         # Remove second clip
         self.timeline_widget.canvas.clips.remove(clip2)
+
+        # Undo Commands
+        modify_cmd = ModifyClipsCommand(
+            self.timeline_widget.canvas,
+            [(clip1.id, old_clip1_state, new_clip1_state)],
+            description="Merge subtitles (modify first)"
+        )
+
+        remove_cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[],
+            removed=[clip2],
+            description="Merge subtitles (remove second)"
+        )
+
+        macro_cmd = MacroCommand([modify_cmd, remove_cmd], description="Merge subtitles")
+        self.undo_stack.push(macro_cmd)
+        self._update_undo_redo_actions()
+
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -1855,7 +1993,6 @@ class MainWindow(QMainWindow):
     def _auto_format_subtitles(self):
         """Apply automatic formatting to all subtitle clips (NEW API)"""
         from core.subtitle_processor import SubtitleProcessor
-        from ui.timeline_widget import TimelineClip
         
         # Use runtime config for subtitle settings
         config = self.runtime_config
@@ -2119,8 +2256,24 @@ class MainWindow(QMainWindow):
             if any('\n' in seg for seg in segments_text):
                 format_count += 1
         
+        # Keep old clips for undo
+        old_clips_list = copy.deepcopy(self.timeline_widget.canvas.clips)
+
         # Replace subtitle clips
-        self.timeline_widget.canvas.clips = existing_non_subtitle_clips + new_clips
+        new_clips_list = existing_non_subtitle_clips + new_clips
+        self.timeline_widget.canvas.clips = new_clips_list
+
+        # Undo Command
+        cmd = ReplaceAllClipsCommand(
+            self.timeline_widget.canvas,
+            old_clips=old_clips_list,
+            new_clips=copy.deepcopy(new_clips_list),
+            description="Auto format subtitles",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        self._update_undo_redo_actions()
+
         self.timeline_widget.canvas.update()
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
@@ -2173,6 +2326,8 @@ class MainWindow(QMainWindow):
         
         # Realign: each image matches an audio clip
         realigned_count = 0
+        modifications = []
+
         for i, img_clip in enumerate(images_to_realign):
             if i >= len(available_audio):
                 break
@@ -2185,11 +2340,28 @@ class MainWindow(QMainWindow):
             else:
                 next_audio_start = audio_clip.start + audio_clip.duration
             
+            # Record state
+            old_state = copy.deepcopy(img_clip)
+
             # Update image clip
             img_clip.start = audio_clip.start
             img_clip.duration = next_audio_start - audio_clip.start
+
+            new_state = copy.deepcopy(img_clip)
+            modifications.append((img_clip.id, old_state, new_state))
+
             realigned_count += 1
         
+        if modifications:
+            cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                modifications,
+                description="Realign images",
+                callback=self._on_undo_redo_callback
+            )
+            self.undo_stack.push(cmd)
+            self._update_undo_redo_actions()
+
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -2199,30 +2371,41 @@ class MainWindow(QMainWindow):
         """Change the image of an image clip"""
         # Check if there's a selected image in the list
         selected_items = self.image_list.selectedItems()
+        path = None
         
         if selected_items:
             # Use selected image from list
             selected_path = selected_items[0].data(Qt.ItemDataRole.UserRole)
             if selected_path:
-                clip.image_path = selected_path
-                clip.name = Path(selected_path).name
-                self.timeline_widget.canvas.pixmap_cache.pop(selected_path, None)  # Clear cache
-                self.timeline_widget.canvas.update()
-                
-                playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
-                self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
-                self.statusBar().showMessage(f"이미지가 변경되었습니다: {clip.name}")
-                return
+                path = selected_path
         
-        # Otherwise, open file dialog
-        path, _ = QFileDialog.getOpenFileName(
-            self, "이미지 선택", "",
-            "Image Files (*.png *.jpg *.jpeg *.webp);;All Files (*)"
-        )
+        if not path:
+            # Otherwise, open file dialog
+            path_sel, _ = QFileDialog.getOpenFileName(
+                self, "이미지 선택", "",
+                "Image Files (*.png *.jpg *.jpeg *.webp);;All Files (*)"
+            )
+            if path_sel:
+                path = path_sel
+
         if path:
+            old_state = copy.deepcopy(clip)
             clip.image_path = path
             clip.name = Path(path).name
+            new_state = copy.deepcopy(clip)
+
             self.timeline_widget.canvas.pixmap_cache.pop(path, None)  # Clear cache
+
+            # Undo command
+            cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                [(clip.id, old_state, new_state)],
+                description=f"Change image to {clip.name}",
+                callback=self._on_undo_redo_callback
+            )
+            self.undo_stack.push(cmd)
+            self._update_undo_redo_actions()
+
             self.timeline_widget.canvas.update()
             
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
@@ -2231,7 +2414,6 @@ class MainWindow(QMainWindow):
     
     def _insert_image_at_clip(self, audio_clip):
         """Insert a new image clip at the position of an audio clip"""
-        from .timeline_widget import TimelineClip
         
         # Check if there's a selected image in the list
         selected_items = self.image_list.selectedItems()
@@ -2267,8 +2449,7 @@ class MainWindow(QMainWindow):
                 break
         
         # Generate unique ID
-        existing_ids = [c.id for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
-        new_id = f"img_inserted_{len(existing_ids)}"
+        new_id = self._make_unique_clip_id(f"img_inserted_{len(audio_clips)}")
         
         # Create new image clip
         new_clip = TimelineClip(
@@ -2283,7 +2464,18 @@ class MainWindow(QMainWindow):
             image_path=image_path
         )
         
-        self.timeline_widget.canvas.clips.append(new_clip)
+        # Undo command
+        cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[new_clip],
+            removed=[],
+            description=f"Insert image {new_clip.name}",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+
         self.timeline_widget.canvas._update_total_duration()
         self.timeline_widget.canvas.update()
         
@@ -2294,11 +2486,22 @@ class MainWindow(QMainWindow):
     def _delete_clip(self, clip):
         """Delete a clip from the timeline"""
         if clip in self.timeline_widget.canvas.clips:
-            # Remove from AudioMixer if audio clip
+            # Undo command
+            cmd = AddRemoveClipsCommand(
+                self.timeline_widget.canvas,
+                added=[],
+                removed=[clip],
+                description=f"Delete {clip.name}",
+                callback=self._on_undo_redo_callback
+            )
+            self.undo_stack.push(cmd)
+            cmd.redo()
+            self._update_undo_redo_actions()
+
+            # Remove from AudioMixer if audio clip (handled by _on_undo_redo_callback mostly, but ensure)
             if clip.clip_type == "audio":
                 self.preview_widget.remove_audio_clip(clip.id)
             
-            self.timeline_widget.canvas.clips.remove(clip)
             self.timeline_widget.canvas.update()
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
             self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
