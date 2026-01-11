@@ -2678,6 +2678,8 @@ class MainWindow(QMainWindow):
                                 end_time=clip.start + clip.duration,
                                 track=clip.track,
                                 clip_type="audio",
+                                source_in=clip.offset,  # Source file offset
+                                source_out=clip.offset + clip.duration,  # Source file end
                             )
                         )
 
