@@ -325,6 +325,9 @@ class RenderSettingsDialog(QDialog):
 
         # Force subtitle to show if there is one at current position
         current_pos = self.preview_widget.media_player.position()
+        
+        # Force refresh by resetting state tracker
+        self.preview_widget.current_subtitle = None
         self.preview_widget._on_position_changed(current_pos)
 
     def _apply_preview_position(self):
