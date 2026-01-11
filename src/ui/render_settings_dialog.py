@@ -38,16 +38,16 @@ class RenderSettingsDialog(QDialog):
             'fps': VIDEO_FPS,
             'subtitle_enabled': True,
             'font_family': 'Malgun Gothic',
-            'font_size': 32,
+            'font_size': 60,
             'font_color': '#FFFFFF',
             'outline_enabled': True,
-            'outline_width': 2,
+            'outline_width': 4,
             'outline_color': '#000000',
             'bg_enabled': False,
             'bg_color': '#000000', # Will be semi-transparent
             'bg_alpha': 160,
             'position': 'Bottom', # Bottom, Top, Center
-            'margin_v': 48
+            'margin_v': 100
         }
 
         self._setup_ui()
@@ -438,16 +438,16 @@ class RenderSettingsDialog(QDialog):
             'fps': VIDEO_FPS,
             'subtitle_enabled': True,
             'font_family': 'Malgun Gothic',
-            'font_size': 32,
+            'font_size': 60,
             'font_color': '#FFFFFF',
             'outline_enabled': True,
-            'outline_width': 2,
+            'outline_width': 4,
             'outline_color': '#000000',
             'bg_enabled': False,
             'bg_color': '#000000',
             'bg_alpha': 160,
             'position': 'Bottom',
-            'margin_v': 48
+            'margin_v': 100
         })
 
         # Update UI components
