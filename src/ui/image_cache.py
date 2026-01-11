@@ -44,6 +44,7 @@ class ImageCache(QObject):
         self._lock = threading.Lock()
         self._pending: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._is_running = True
         
         # Connect internal signal to main thread handler
         self._image_processed.connect(self._on_image_processed)
@@ -55,6 +56,9 @@ class ImageCache(QObject):
         Loads originals and generates all thumbnail sizes upfront.
         Emits image_loaded signal for each completed image.
         """
+        if not self._is_running:
+            return
+
         for path in paths:
             if not path or not Path(path).exists():
                 continue
@@ -68,6 +72,9 @@ class ImageCache(QObject):
     
     def _load_image(self, path: str):
         """Load image and generate thumbnails in background (Thread-Safe QImage ops only)"""
+        if not self._is_running:
+            return
+            
         try:
             # Load original (QImage is thread-safe)
             image = QImage(path)
@@ -76,6 +83,9 @@ class ImageCache(QObject):
                     self._pending.discard(path)
                 return
             
+            if not self._is_running:
+                return
+
             # Generate thumbnails using QImage (thread-safe)
             thumb_small = image.scaled(
                 THUMBNAIL_SIZE_SMALL,
@@ -83,22 +93,38 @@ class ImageCache(QObject):
                 Qt.TransformationMode.SmoothTransformation
             )
             
+            if not self._is_running:
+                return
+
             thumb_timeline = image.scaled(
                 THUMBNAIL_SIZE_TIMELINE,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             
+            if not self._is_running:
+                return
+
             # Send QImages to main thread for QPixmap conversion
-            self._image_processed.emit(path, image, thumb_small, thumb_timeline)
+            # Wrap in try-except to handle case where object is deleted during shutdown
+            try:
+                self._image_processed.emit(path, image, thumb_small, thumb_timeline)
+            except RuntimeError:
+                # Occurs if the C++ object is deleted while thread is running (app shutdown)
+                pass
             
         except Exception as e:
-            print(f"Error loading image {path}: {e}")
-            with self._lock:
-                self._pending.discard(path)
+            # Ignore errors during shutdown
+            if self._is_running:
+                print(f"Error loading image {path}: {e}")
+                with self._lock:
+                    self._pending.discard(path)
 
     def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage):
         """Handle processed images on the main thread"""
+        if not self._is_running:
+            return
+            
         try:
             # Convert to QPixmap (Must be done on main thread)
             pix_original = QPixmap.fromImage(original)
@@ -144,9 +170,12 @@ class ImageCache(QObject):
             self._originals.clear()
             self._thumbnails_small.clear()
             self._thumbnails_timeline.clear()
+            self._pending.clear()
     
     def cleanup(self):
         """Cleanup resources"""
+        self._is_running = False
+        
         # Cancel any pending futures and shutdown
         try:
             # Python 3.9+ supports cancel_futures
