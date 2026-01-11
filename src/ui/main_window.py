@@ -1431,8 +1431,7 @@ class MainWindow(QMainWindow):
                     )
                     clips.append(img_clip)
         
-        self.timeline_widget.canvas.clips = clips
-        self.timeline_widget.canvas.update()
+        self.timeline_widget.set_clips(clips)
         
         # Sync to preview widget
         self.preview_widget.set_timeline_clips(clips)
@@ -2972,8 +2971,7 @@ class MainWindow(QMainWindow):
         self.project_path = None
         
         # Reset timeline
-        self.timeline_widget.canvas.clips = []
-        self.timeline_widget.canvas.update()
+        self.timeline_widget.set_clips([])
         self.preview_widget.set_timeline_clips([])
         
         # Reset UI
@@ -3178,8 +3176,7 @@ class MainWindow(QMainWindow):
             )
             clips.append(clip)
         
-        self.timeline_widget.canvas.clips = clips
-        self.timeline_widget.canvas.update()
+        self.timeline_widget.set_clips(clips)
         self.preview_widget.set_timeline_clips(clips)
         
         # Restore speaker-audio mapping table
