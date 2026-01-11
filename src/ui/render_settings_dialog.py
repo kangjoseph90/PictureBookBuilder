@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QFontComboBox, QColorDialog, QTabWidget, QWidget, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QObject
 from PyQt6.QtGui import QColor, QFont
 
 from .preview_widget import PreviewWidget
@@ -224,6 +224,9 @@ class RenderSettingsDialog(QDialog):
         preview_layout = QVBoxLayout(preview_panel)
 
         self.preview_widget = PreviewWidget()
+        # Install event filter to handle resize updates
+        self.preview_widget.image_label.installEventFilter(self)
+        
         # Initial load of timeline clips
         self.preview_widget.set_timeline_clips(self.clips)
 
@@ -274,19 +277,30 @@ class RenderSettingsDialog(QDialog):
 
         self._update_preview()
 
+    def eventFilter(self, obj, event):
+        if obj == self.preview_widget.image_label and event.type() == QEvent.Type.Resize:
+            self._update_preview()
+        return super().eventFilter(obj, event)
+
     def _update_preview(self):
         """Update the preview widget styling based on current settings"""
-        # Apply subtitle styling to the preview widget's subtitle label
-
         if not self.settings['subtitle_enabled']:
             self.preview_widget.subtitle_label.hide()
             return
 
+        # Calculate scale factor based on render resolution vs preview size
+        render_w, render_h = self.settings['width'] or 1920, self.settings['height'] or 1080
+        preview_size = self.preview_widget.image_label.size()
+        scale = min(preview_size.width() / render_w, preview_size.height() / render_h)
+
+        # Scale font size proportionally to preview size
+        scaled_font_size = max(8, int(self.settings['font_size'] * scale))
+
+        # Note: color is set via set_text_color for StrokedLabel support
         style = f"""
             QLabel {{
                 font-family: "{self.settings['font_family']}";
-                font-size: {self.settings['font_size'] // 2}px; /* Scale down for preview */
-                color: {self.settings['font_color']};
+                font-size: {scaled_font_size}px;
                 padding: 4px 8px;
                 border-radius: 2px;
                 border: none;
@@ -300,20 +314,19 @@ class RenderSettingsDialog(QDialog):
         else:
             style += "QLabel { background-color: transparent; }"
 
-        # For preview purposes, we use QGraphicsDropShadowEffect to simulate outline
-        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
-        
-        effect = QGraphicsDropShadowEffect()
-        if self.settings['outline_enabled'] and self.settings['outline_width'] > 0:
-             c = QColor(self.settings['outline_color'])
-             effect.setColor(c)
-             effect.setOffset(1, 1)
-             effect.setBlurRadius(2)
-             self.preview_widget.subtitle_label.setGraphicsEffect(effect)
-        else:
-             self.preview_widget.subtitle_label.setGraphicsEffect(None)
-
+        # Set style sheet for font and background
         self.preview_widget.subtitle_label.setStyleSheet(style)
+
+        # Set Text Color directly
+        self.preview_widget.subtitle_label.set_text_color(self.settings['font_color'])
+
+        # Set Outline directly
+        if self.settings['outline_enabled'] and self.settings['outline_width'] > 0:
+             # Scale outline width
+             scaled_outline = max(1, self.settings['outline_width'] * scale)
+             self.preview_widget.subtitle_label.set_outline(scaled_outline, self.settings['outline_color'])
+        else:
+             self.preview_widget.subtitle_label.set_outline(0, None)
 
         self._apply_preview_position()
 
@@ -332,7 +345,11 @@ class RenderSettingsDialog(QDialog):
             return
 
         pos_setting = self.settings['position']
-        margin_v = self.settings['margin_v'] // 2 # Scale for preview
+        margin_v_setting = self.settings['margin_v']
+        render_w = self.settings['width']
+        render_h = self.settings['height']
+        if render_w <= 0: render_w = 1920
+        if render_h <= 0: render_h = 1080
 
         def custom_reposition():
             if not label.isVisible(): return
@@ -340,24 +357,39 @@ class RenderSettingsDialog(QDialog):
             img_w = container.width()
             img_h = container.height()
 
-            max_w = int(img_w * 0.9)
+            # Calculate content rect
+            scale = min(img_w / render_w, img_h / render_h)
+            content_w = render_w * scale
+            content_h = render_h * scale
+            
+            # Offsets (centering)
+            off_x = (img_w - content_w) / 2
+            off_y = (img_h - content_h) / 2
+
+            # Limit subtitle width to content width
+            max_w = int(content_w * 0.9)
             label.setMaximumWidth(max_w)
             label.adjustSize()
 
             sub_w = label.width()
             sub_h = label.height()
 
-            x = (img_w - sub_w) // 2
-            y = 0
+            # Scaled margin relative to CONTENT
+            margin_v = margin_v_setting * scale
+
+            # X is always centered on content
+            x = off_x + (content_w - sub_w) / 2
 
             if pos_setting == "Bottom":
-                y = img_h - sub_h - margin_v
+                # Start from bottom of CONTENT, go up by margin and height
+                y = off_y + content_h - sub_h - margin_v
             elif pos_setting == "Top":
-                y = margin_v
+                # Start from top of CONTENT
+                y = off_y + margin_v
             else: # Center
-                y = (img_h - sub_h) // 2
+                y = off_y + (content_h - sub_h) / 2
 
-            label.move(x, y)
+            label.move(int(x), int(y))
 
         self.preview_widget._reposition_subtitle = custom_reposition
         custom_reposition()
