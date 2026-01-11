@@ -70,9 +70,13 @@ class RenderSettingsDialog(QDialog):
         # Video Settings Group
         video_group = QGroupBox("비디오 설정")
         video_form = QFormLayout()
+        video_form.setSpacing(10)
+        video_form.setContentsMargins(10, 10, 10, 10)
 
         # Resolution
         res_layout = QHBoxLayout()
+        res_layout.setSpacing(10)
+        
         self.spin_width = QSpinBox()
         self.spin_width.setRange(100, 7680)
         self.spin_width.setValue(self.settings['width'])
@@ -85,8 +89,12 @@ class RenderSettingsDialog(QDialog):
         self.spin_height.setSuffix(" px")
         self.spin_height.valueChanged.connect(self._on_setting_changed)
 
+        lbl_x = QLabel("×") # Using multiplication symbol
+        lbl_x.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_x.setFixedWidth(20)
+        
         res_layout.addWidget(self.spin_width)
-        res_layout.addWidget(QLabel("x"))
+        res_layout.addWidget(lbl_x)
         res_layout.addWidget(self.spin_height)
         video_form.addRow("해상도:", res_layout)
 
@@ -103,72 +111,68 @@ class RenderSettingsDialog(QDialog):
         # Subtitle Settings Group
         sub_group = QGroupBox("자막 설정")
         sub_layout = QVBoxLayout()
+        sub_layout.setSpacing(10)
 
-        # Toggle Enable
-        self.chk_sub_enable = QCheckBox("자막 포함")
+        # 1. Master Toggle: Subtitle + Color
+        sub_enable_layout = QHBoxLayout()
+        self.chk_sub_enable = QCheckBox("자막")
         self.chk_sub_enable.setChecked(self.settings['subtitle_enabled'])
         self.chk_sub_enable.toggled.connect(self._on_sub_enable_toggled)
-        sub_layout.addWidget(self.chk_sub_enable)
+        
+        self.btn_font_color = QPushButton()
+        self.btn_font_color.setFixedSize(20, 20)
+        self.btn_font_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_font_color.clicked.connect(lambda: self._pick_color('font_color', self.btn_font_color))
+        self._set_btn_color(self.btn_font_color, self.settings['font_color'])
+        
+        sub_enable_layout.addWidget(self.chk_sub_enable)
+        sub_enable_layout.addSpacing(4)
+        sub_enable_layout.addWidget(self.btn_font_color)
+        sub_enable_layout.addStretch()
+        sub_layout.addLayout(sub_enable_layout)
 
         self.sub_settings_widget = QWidget()
         sub_form = QFormLayout(self.sub_settings_widget)
-        sub_form.setContentsMargins(0, 5, 0, 0)
+        sub_form.setContentsMargins(0, 0, 0, 0)
+        sub_form.setSpacing(10)
 
-        # Font
-        self.font_combo = QFontComboBox()
-        self.font_combo.setCurrentFont(QFont(self.settings['font_family']))
-        self.font_combo.currentFontChanged.connect(self._on_setting_changed)
-        sub_form.addRow("폰트:", self.font_combo)
-
-        # Size
-        self.spin_font_size = QSpinBox()
-        self.spin_font_size.setRange(8, 200)
-        self.spin_font_size.setValue(self.settings['font_size'])
-        self.spin_font_size.valueChanged.connect(self._on_setting_changed)
-        sub_form.addRow("크기:", self.spin_font_size)
-
-        # Color
-        color_layout = QHBoxLayout()
-        self.btn_font_color = QPushButton()
-        self.btn_font_color.setFixedSize(50, 25)
-        self.btn_font_color.clicked.connect(lambda: self._pick_color('font_color', self.btn_font_color))
-        self._set_btn_color(self.btn_font_color, self.settings['font_color'])
-        color_layout.addWidget(self.btn_font_color)
-        sub_form.addRow("글자 색상:", color_layout)
-
-        # Outline
+        # 2. Outline Toggle + Color + Width
         outline_layout = QHBoxLayout()
         self.chk_outline = QCheckBox("테두리")
         self.chk_outline.setChecked(self.settings['outline_enabled'])
         self.chk_outline.toggled.connect(self._on_outline_toggled)
+
+        self.btn_outline_color = QPushButton()
+        self.btn_outline_color.setFixedSize(20, 20)
+        self.btn_outline_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_outline_color.clicked.connect(lambda: self._pick_color('outline_color', self.btn_outline_color))
+        self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
 
         self.spin_outline_width = QSpinBox()
         self.spin_outline_width.setRange(0, 20)
         self.spin_outline_width.setValue(self.settings['outline_width'])
         self.spin_outline_width.valueChanged.connect(self._on_setting_changed)
 
-        self.btn_outline_color = QPushButton()
-        self.btn_outline_color.setFixedSize(50, 25)
-        self.btn_outline_color.clicked.connect(lambda: self._pick_color('outline_color', self.btn_outline_color))
-        self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
-
         outline_layout.addWidget(self.chk_outline)
-        outline_layout.addWidget(self.spin_outline_width)
+        outline_layout.addSpacing(4)
         outline_layout.addWidget(self.btn_outline_color)
-        sub_form.addRow("테두리:", outline_layout)
+        outline_layout.addStretch()
+        outline_layout.addWidget(QLabel("두께:"))
+        outline_layout.addWidget(self.spin_outline_width)
+        sub_form.addRow(outline_layout)
 
-        # Background
+        # 3. Background Toggle + Color + Alpha
         bg_layout = QHBoxLayout()
         self.chk_bg = QCheckBox("배경")
         self.chk_bg.setChecked(self.settings['bg_enabled'])
         self.chk_bg.toggled.connect(self._on_bg_toggled)
 
         self.btn_bg_color = QPushButton()
-        self.btn_bg_color.setFixedSize(50, 25)
+        self.btn_bg_color.setFixedSize(20, 20)
+        self.btn_bg_color.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_bg_color.clicked.connect(lambda: self._pick_color('bg_color', self.btn_bg_color))
         self._set_btn_color(self.btn_bg_color, self.settings['bg_color'])
 
-        # Alpha (Transparency)
         self.spin_bg_alpha = QSpinBox()
         self.spin_bg_alpha.setRange(0, 255)
         self.spin_bg_alpha.setValue(self.settings['bg_alpha'])
@@ -176,23 +180,38 @@ class RenderSettingsDialog(QDialog):
         self.spin_bg_alpha.valueChanged.connect(self._on_setting_changed)
 
         bg_layout.addWidget(self.chk_bg)
+        bg_layout.addSpacing(4)
         bg_layout.addWidget(self.btn_bg_color)
+        bg_layout.addStretch()
         bg_layout.addWidget(QLabel("투명도:"))
         bg_layout.addWidget(self.spin_bg_alpha)
-        sub_form.addRow("배경:", bg_layout)
+        sub_form.addRow(bg_layout)
+        
+        # 4. Font Property
+        self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(QFont(self.settings['font_family']))
+        self.font_combo.currentFontChanged.connect(self._on_setting_changed)
+        sub_form.addRow("폰트:", self.font_combo)
 
-        # Position
+        # 5. Size Property
+        self.spin_font_size = QSpinBox()
+        self.spin_font_size.setRange(8, 200)
+        self.spin_font_size.setValue(self.settings['font_size'])
+        self.spin_font_size.valueChanged.connect(self._on_setting_changed)
+        sub_form.addRow("크기:", self.spin_font_size)
+
+        # 6. Position
         self.combo_position = QComboBox()
         self.combo_position.addItems(["Bottom", "Top", "Center"])
         self.combo_position.currentTextChanged.connect(self._on_setting_changed)
         sub_form.addRow("위치:", self.combo_position)
 
-        # Margin V
+        # 7. Margin
         self.spin_margin_v = QSpinBox()
         self.spin_margin_v.setRange(0, 500)
         self.spin_margin_v.setValue(self.settings['margin_v'])
         self.spin_margin_v.valueChanged.connect(self._on_setting_changed)
-        sub_form.addRow("여백(수직):", self.spin_margin_v)
+        sub_form.addRow("여백:", self.spin_margin_v)
 
         sub_layout.addWidget(self.sub_settings_widget)
         sub_group.setLayout(sub_layout)
@@ -200,6 +219,7 @@ class RenderSettingsDialog(QDialog):
 
         # Default Reset Button
         btn_reset = QPushButton("기본값 복원")
+        btn_reset.setStyleSheet("height: 32px;")
         btn_reset.clicked.connect(self._reset_to_defaults)
         settings_layout.addWidget(btn_reset)
 
@@ -207,10 +227,14 @@ class RenderSettingsDialog(QDialog):
 
         # Render Buttons
         btn_layout = QHBoxLayout()
+        common_btn_style = "height: 32px; font-weight: bold; border-radius: 4px;"
+        
         self.btn_cancel = QPushButton("취소")
+        self.btn_cancel.setStyleSheet(common_btn_style + "background-color: #555; color: white;")
         self.btn_cancel.clicked.connect(self.reject)
+        
         self.btn_render = QPushButton("렌더링 시작")
-        self.btn_render.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+        self.btn_render.setStyleSheet(common_btn_style + "background-color: #4CAF50; color: white;")
         self.btn_render.clicked.connect(self.accept)
 
         btn_layout.addWidget(self.btn_cancel)
@@ -240,7 +264,19 @@ class RenderSettingsDialog(QDialog):
         self._on_setting_changed()
 
     def _set_btn_color(self, btn, color_hex):
-        btn.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #555;")
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color_hex};
+                border: 1px solid #555;
+                border-radius: 10px;
+                padding: 0px;
+                margin: 0px;
+                min-width: 20px;
+                min-height: 20px;
+                max-width: 20px;
+                max-height: 20px;
+            }}
+        """)
 
     def _pick_color(self, key, btn):
         current = QColor(self.settings[key])
