@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
 )
 
 from .clip import TimelineClip
+from .image_cache import get_image_cache
 
 class TimelineCanvas(QWidget):
     """Canvas widget for drawing the timeline with playhead"""
@@ -104,6 +105,9 @@ class TimelineCanvas(QWidget):
         
         # Waveform rendering optimization
         self._waveform_path_cache: dict[str, QPainterPath] = {}  # Cache QPainterPath for each clip
+        
+        # Image cache for thumbnails (pre-generated)
+        self._image_cache = get_image_cache()
         
         # Throttling for mouse move events (to reduce CPU usage during fast dragging)
         self._update_throttle_timer = QTimer(self)
@@ -516,31 +520,27 @@ class TimelineCanvas(QWidget):
         """Draw a thumbnail at the start of the image clip"""
         if not clip.image_path:
             return
-            
-        # Get or load pixmap
-        if clip.image_path not in self.pixmap_cache:
-            try:
-                pixmap = QPixmap(clip.image_path)
-                if not pixmap.isNull():
-                    # Scale to fit track height (maintaining aspect ratio)
-                    # Use a slightly smaller height to leave padding
-                    scaled = pixmap.scaledToHeight(int(height - 4), Qt.TransformationMode.SmoothTransformation)
-                    self.pixmap_cache[clip.image_path] = scaled
-                else:
-                    self.pixmap_cache[clip.image_path] = None
-            except Exception as e:
-                print(f"Failed to load thumbnail: {e}")
-                self.pixmap_cache[clip.image_path] = None
-                
+        
+        # Check local cache first
         pixmap = self.pixmap_cache.get(clip.image_path)
+        
+        if pixmap is None:
+            # Try to get from global cache
+            thumbnail = self._image_cache.get_thumbnail_timeline(clip.image_path)
+            if thumbnail and not thumbnail.isNull():
+                # Scale to track height
+                pixmap = thumbnail.scaledToHeight(
+                    self.track_height - 4, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.pixmap_cache[clip.image_path] = pixmap
+        
         if pixmap:
             # Draw at the start of the clip
-            # Ensure we don't draw outside the clip boundaries
             thumb_width = pixmap.width()
             draw_width = min(thumb_width, int(width))
             
             if draw_width > 5:
-                # Draw the pixmap (or a portion of it if the clip is too short)
                 painter.drawPixmap(int(x + 2), int(y + 2), pixmap, 0, 0, draw_width, pixmap.height())
 
     def _draw_waveform(self, painter: QPainter, clip: TimelineClip, 

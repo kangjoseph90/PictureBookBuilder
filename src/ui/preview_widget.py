@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics
 
+from .image_cache import get_image_cache
+
 from .audio_mixer import AudioMixer, ScheduledClip
 
 
@@ -177,6 +179,9 @@ class PreviewWidget(QWidget):
         self.current_subtitle: Optional[str] = None
         self.showing_placeholder = True
         self.subtitles_enabled = True
+        
+        # Image cache for shared originals
+        self._image_cache = get_image_cache()
         
         self._setup_ui()
         self._setup_audio_mixer()
@@ -405,11 +410,22 @@ class PreviewWidget(QWidget):
                     'end': clip.start + clip.duration
                 })
         
+        # Pre-cache all images for smooth playback
+        self._preload_all_images()
+        
         # Update display for current position
         if playhead_ms is not None:
             self._on_position_changed(playhead_ms)
         elif self.media_player.position() >= 0:
             self._on_position_changed(self.media_player.position())
+    
+    def _preload_all_images(self):
+        """Images are now loaded by main_window when folder is opened.
+        
+        This method exists for compatibility but no longer needs to do anything
+        since all images are loaded upfront into the shared cache.
+        """
+        pass
 
     def _get_current_image(self, position_ms: int) -> Optional[str]:
         """Get the image that should be displayed at current position"""
@@ -434,19 +450,33 @@ class PreviewWidget(QWidget):
         return None
     
     def set_image(self, image_path: str):
-        """Display an image"""
+        """Display an image from the shared cache"""
         self.current_image = image_path
         
         if not image_path or not Path(image_path).exists():
             return
         
+        target_size = self.image_label.size()
+        
+        # Get original from shared cache
+        original = self._image_cache.get_original(image_path)
+        if original and not original.isNull():
+            # Scale to fit label
+            scaled = original.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled)
+            return
+        
+        # Fallback: Load synchronously (if cache not ready yet)
         pixmap = QPixmap(image_path)
         if pixmap.isNull():
             return
         
-        # Scale to fit while maintaining aspect ratio
         scaled = pixmap.scaled(
-            self.image_label.size(),
+            target_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )

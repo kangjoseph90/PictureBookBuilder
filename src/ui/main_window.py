@@ -1041,8 +1041,10 @@ class MainWindow(QMainWindow):
                 self.action_apply_images.setEnabled(True)
     
     def _populate_image_list(self, folder_path: str):
-        """Populate image list with thumbnails (with natural sorting)"""
+        """Populate image list with thumbnails (loads all upfront, natural sorting)"""
         import re
+        from .image_cache import get_image_cache
+        
         def natural_key(text):
             return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
 
@@ -1055,24 +1057,51 @@ class MainWindow(QMainWindow):
         # Sort images naturally (1, 2, 10 instead of 1, 10, 2)
         images.sort(key=lambda x: natural_key(x.name))
         
+        # Get image cache
+        cache = get_image_cache()
+        
+        # Disconnect previous signal if connected
+        try:
+            cache.image_loaded.disconnect(self._on_thumbnail_ready)
+        except TypeError:
+            pass  # Not connected
+        
+        # Connect signal for thumbnail updates
+        cache.image_loaded.connect(self._on_thumbnail_ready)
+        
+        # Store path to item mapping for updates
+        self._image_path_to_item: dict[str, QListWidgetItem] = {}
+        
+        # Add items with placeholder icons immediately
+        image_paths = []
         for f in images:
-            # Create thumbnail
-            pixmap = QPixmap(str(f))
-            if not pixmap.isNull():
-                # Scale to thumbnail size
-                thumbnail = pixmap.scaled(
-                    48, 48,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                icon = QIcon(thumbnail)
-                item = QListWidgetItem(icon, f.name)
-            else:
-                item = QListWidgetItem(f"🖼️ {f.name}")
-            
-            # Store full path in item data
+            # Create item with placeholder (no thumbnail yet)
+            item = QListWidgetItem(f"🖼️ {f.name}")
             item.setData(Qt.ItemDataRole.UserRole, str(f))
             self.image_list.addItem(item)
+            
+            # Store mapping for async update
+            self._image_path_to_item[str(f)] = item
+            image_paths.append(str(f))
+        
+        # Load all images in background (thumbnails generated automatically)
+        cache.load_images(image_paths)
+    
+    def _on_thumbnail_ready(self, path: str):
+        """Handle image load completion - update list item with thumbnail"""
+        if not hasattr(self, '_image_path_to_item'):
+            return
+        
+        from .image_cache import get_image_cache
+        cache = get_image_cache()
+        
+        item = self._image_path_to_item.get(path)
+        if item:
+            pixmap = cache.get_thumbnail_small(path)
+            if pixmap and not pixmap.isNull():
+                icon = QIcon(pixmap)
+                item.setIcon(icon)
+                item.setText(Path(path).name)
     
     def _apply_images_to_timeline(self):
         """Apply images from list to timeline, mapping 1:1 with audio clips"""
