@@ -109,6 +109,10 @@ class TimelineCanvas(QWidget):
         # Image cache for thumbnails (pre-generated)
         self._image_cache = get_image_cache()
         
+        # Render caching
+        self._cached_background: Optional[QPixmap] = None
+        self._background_dirty: bool = True
+
         # Throttling for mouse move events (to reduce CPU usage during fast dragging)
         self._update_throttle_timer = QTimer(self)
         self._update_throttle_timer.setSingleShot(True)
@@ -121,6 +125,7 @@ class TimelineCanvas(QWidget):
         """Set the clips to display"""
         self.clips = clips
         self._update_total_duration()
+        self._background_dirty = True
         self.update()
     
     def _schedule_throttled_update(self, waveform_clip_id: Optional[str] = None):
@@ -146,6 +151,7 @@ class TimelineCanvas(QWidget):
                 self._pending_waveform_clip_id = None
             
             self._pending_update = False
+            self._background_dirty = True
             self.update()
     
     def get_snap_time(self, time: float, exclude_clip_id: str = None) -> float:
@@ -209,6 +215,8 @@ class TimelineCanvas(QWidget):
                             # Invalidate cached path for this clip
                             if clip_id in self._waveform_path_cache:
                                 del self._waveform_path_cache[clip_id]
+
+                            self._background_dirty = True
                         except Exception as e:
                             print(f"Error updating waveform for clip {clip_id}: {e}")
                 break
@@ -220,6 +228,7 @@ class TimelineCanvas(QWidget):
             time: Playhead time in seconds
             auto_scroll: If True, scroll to keep playhead visible
         """
+        old_scroll = self.scroll_offset
         self.playhead_time = max(0, time)  # Allow any positive time
         
         # Auto-scroll to keep playhead visible (only when explicitly requested)
@@ -231,6 +240,9 @@ class TimelineCanvas(QWidget):
                 # Playhead is off screen, scroll so playhead is at left edge
                 self.scroll_offset = self.playhead_time * self.zoom - left_margin
                 self.scroll_offset = max(0, self.scroll_offset)
+
+        if self.scroll_offset != old_scroll:
+            self._background_dirty = True
         
         self.update()
     
@@ -238,6 +250,7 @@ class TimelineCanvas(QWidget):
         """Set the gap between clips"""
         self.gap_seconds = gap_seconds
         self._recalculate_positions()
+        self._background_dirty = True
         self.update()
     
     def _recalculate_positions(self):
@@ -337,9 +350,19 @@ class TimelineCanvas(QWidget):
         
         return None, ""
     
-    def paintEvent(self, event: QPaintEvent):
-        """Paint the timeline"""
-        painter = QPainter(self)
+    def resizeEvent(self, event):
+        self._background_dirty = True
+        super().resizeEvent(event)
+
+    def _update_background_cache(self):
+        """Update the cached background pixmap"""
+        if self.width() <= 0 or self.height() <= 0:
+            return
+
+        self._cached_background = QPixmap(self.size())
+        self._cached_background.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(self._cached_background)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         # Background
@@ -361,6 +384,26 @@ class TimelineCanvas(QWidget):
                 continue  # Clip is completely to the right
             
             self._draw_clip(painter, clip)
+
+        painter.end()
+        self._background_dirty = False
+
+    def paintEvent(self, event: QPaintEvent):
+        """Paint the timeline"""
+        # Early return for zero-size widget
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        
+        # Check if we need to update the cache
+        if self._background_dirty or self._cached_background is None or self._cached_background.size() != self.size():
+            self._update_background_cache()
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw cached background
+        if self._cached_background:
+            painter.drawPixmap(0, 0, self._cached_background)
         
         # Draw playhead (on top of everything)
         self._draw_playhead(painter)
@@ -639,6 +682,7 @@ class TimelineCanvas(QWidget):
         # Check for edge resize first
         edge_clip, edge = self.get_clip_edge_at(x, y)
         if edge_clip and edge and event.button() == Qt.MouseButton.LeftButton:
+            self._background_dirty = True # Selection/resize start changes visual state
             self.resizing_clip = edge_clip.id
             self.resize_edge = edge
             self.resize_start_x = x
@@ -692,6 +736,7 @@ class TimelineCanvas(QWidget):
         clip = self.get_clip_at(x, y)
         
         if clip:
+            self._background_dirty = True # Selection changed
             self.selected_clip = clip.id
             self.clip_selected.emit(clip.id)
             
@@ -709,6 +754,7 @@ class TimelineCanvas(QWidget):
                 # Show context menu
                 self.clip_context_menu.emit(clip.id, event.globalPosition().toPoint())
         else:
+            self._background_dirty = True # Selection cleared
             self.selected_clip = None
             # Click on empty area - move playhead
             new_time = self.x_to_time(x)
@@ -958,6 +1004,7 @@ class TimelineCanvas(QWidget):
             self.resizing_clip = None
             self.resize_edge = ""
             self.active_snap_time = None
+            self._background_dirty = True
             self.update()
             return
         
@@ -992,6 +1039,7 @@ class TimelineCanvas(QWidget):
             self.dragging_clip = None
             self.active_snap_time = None
             self.drag_start_state.clear()
+            self._background_dirty = True
             self.update()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
@@ -1024,6 +1072,7 @@ class TimelineCanvas(QWidget):
             self.scroll_offset -= event.angleDelta().x() + event.angleDelta().y()
             self.scroll_offset = max(0, self.scroll_offset)
         
+        self._background_dirty = True
         self.update()
 
     def keyPressEvent(self, event):
