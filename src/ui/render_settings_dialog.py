@@ -12,6 +12,7 @@ from PyQt6.QtGui import QColor, QFont
 from .preview_widget import PreviewWidget
 from config import VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS
 from runtime_config import get_config
+from exporters.video_renderer import SUBTITLE_PADDING_H, SUBTITLE_PADDING_V, SUBTITLE_RADIUS
 
 class RenderSettingsDialog(QDialog):
     """
@@ -355,8 +356,11 @@ class RenderSettingsDialog(QDialog):
     def _update_preview(self):
         """Update the preview widget styling based on current settings"""
         if not self.settings['subtitle_enabled']:
+            self.preview_widget.subtitles_enabled = False
             self.preview_widget.subtitle_label.hide()
             return
+
+        self.preview_widget.subtitles_enabled = True
 
         # Calculate scale factor based on render resolution vs preview size
         render_w, render_h = self.settings['width'] or 1920, self.settings['height'] or 1080
@@ -365,14 +369,19 @@ class RenderSettingsDialog(QDialog):
 
         # Scale font size proportionally to preview size
         scaled_font_size = max(8, int(self.settings['font_size'] * scale))
+        
+        # Scale padding and radius for preview matching
+        scaled_pad_h = int(SUBTITLE_PADDING_H * scale)
+        scaled_pad_v = int(SUBTITLE_PADDING_V * scale)
+        scaled_radius = int(SUBTITLE_RADIUS * scale)
 
         # Note: color is set via set_text_color for StrokedLabel support
         style = f"""
             QLabel {{
                 font-family: "{self.settings['font_family']}";
                 font-size: {scaled_font_size}px;
-                padding: 4px 8px;
-                border-radius: 2px;
+                padding: {scaled_pad_v}px {scaled_pad_h}px;
+                border-radius: {scaled_radius}px;
                 border: none;
             }}
         """
@@ -408,7 +417,7 @@ class RenderSettingsDialog(QDialog):
         
         # Force refresh by resetting state tracker
         self.preview_widget.current_subtitle = None
-        self.preview_widget._on_position_changed(current_pos)
+        self.preview_widget._update_preview_content(current_pos)
 
     def _apply_preview_position(self):
         label = self.preview_widget.subtitle_label
@@ -447,19 +456,37 @@ class RenderSettingsDialog(QDialog):
             sub_w = label.width()
             sub_h = label.height()
 
-            # Scaled margin relative to CONTENT
+            # Scaled margin and padding relative to CONTENT
             margin_v = margin_v_setting * scale
+            # Use the exact integer padding value to match the stylesheet
+            pad_v = int(SUBTITLE_PADDING_V * scale)
 
             # X is always centered on content
             x = off_x + (content_w - sub_w) / 2
 
             if pos_setting == "Bottom":
-                # Start from bottom of CONTENT, go up by margin and height
-                y = off_y + content_h - sub_h - margin_v
+                # Start from bottom of TEXT anchor, go up by margin
+                # Widget bottom = y + sub_h
+                # Text bottom = Widget bottom - pad_v = y + sub_h - pad_v
+                # We want Text bottom to be at (content_h - margin_v)
+                # So: y + sub_h - pad_v = content_h - margin_v
+                # => y = content_h - margin_v - sub_h + pad_v
+                y = off_y + content_h - margin_v - sub_h + pad_v
+                
             elif pos_setting == "Top":
-                # Start from top of CONTENT
-                y = off_y + margin_v
+                # Start from top of TEXT anchor
+                # Widget top = y
+                # Text top = Widget top + pad_v = y + pad_v
+                # We want Text top to be at margin_v
+                # So: y + pad_v = margin_v
+                # => y = margin_v - pad_v
+                y = off_y + margin_v - pad_v
+                
             else: # Center
+                # Center of text block
+                # Widget center = y + sub_h / 2
+                # Text center = (Widget center) (assuming symmetrical padding)
+                # We want Text center to be at content_h / 2
                 y = off_y + (content_h - sub_h) / 2
 
             label.move(int(x), int(y))

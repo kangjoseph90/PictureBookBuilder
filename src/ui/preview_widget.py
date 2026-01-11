@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QStyle, QComboBox, QStyleOption
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics
 
 from .audio_mixer import AudioMixer, ScheduledClip
@@ -113,6 +113,51 @@ class StrokedLabel(QLabel):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._text_color)
         painter.drawPath(path)
+        
+    def sizeHint(self):
+        """Calculate size hint including custom letter/line spacing"""
+        if not self.text():
+            return super().sizeHint()
+            
+        metrics = self.fontMetrics()
+        lines = self.text().split('\n')
+        
+        # Calculate text dimensions
+        line_height = metrics.height()
+        leading = line_height * (self._line_spacing - 1.0)
+        
+        # Height
+        num_lines = len(lines)
+        total_text_height = num_lines * line_height + (num_lines - 1) * leading
+        
+        # Width
+        max_line_width = 0
+        for line in lines:
+            w = metrics.horizontalAdvance(line)
+            if w > max_line_width:
+                max_line_width = w
+                
+        # Add outline width allowance (approximate)
+        w = max_line_width + self._outline_width * 2
+        h = total_text_height + self._outline_width * 2
+        
+        # Add contents margins (which includes stylesheet padding)
+        # Note: ensurePolished() might be needed if style just changed, 
+        # but typically adjustSize() calls it.
+        self.ensurePolished() 
+        marg = self.contentsMargins()
+        
+        w += marg.left() + marg.right()
+        h += marg.top() + marg.bottom()
+        
+        # Add a small buffer for antialiasing/rounding
+        w += 4
+        h += 4
+        
+        return QSize(int(w), int(h))
+        
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
 
 class PreviewWidget(QWidget):
@@ -131,6 +176,7 @@ class PreviewWidget(QWidget):
         self.images: list[str] = []  # Added for backward compatibility/internal use
         self.current_subtitle: Optional[str] = None
         self.showing_placeholder = True
+        self.subtitles_enabled = True
         
         self._setup_ui()
         self._setup_audio_mixer()
@@ -413,6 +459,35 @@ class PreviewWidget(QWidget):
         secs = seconds % 60
         return f"{minutes}:{secs:02d}"
     
+    def _update_preview_content(self, position_ms: int):
+        """Update image and subtitle for the given position"""
+        # Update image and subtitle if we have clips
+        image = self._get_current_image(position_ms)
+        
+        # Check if we need to force update to clear placeholder text
+        force_update = self.showing_placeholder
+        
+        if image != self.current_image or force_update:
+            if image:
+                self.set_image(image)
+            else:
+                # Clear image (and placeholder text if any)
+                self.image_label.clear()
+                self.current_image = None
+            
+            self.showing_placeholder = False
+                
+        subtitle = self._get_current_subtitle(position_ms)
+        if subtitle != self.current_subtitle:
+            self.current_subtitle = subtitle
+            if subtitle and self.subtitles_enabled:
+                self.subtitle_label.setText(subtitle)
+                self.subtitle_label.show()
+                # Center the subtitle label
+                self._reposition_subtitle()
+            else:
+                self.subtitle_label.hide()
+
     def _on_position_changed(self, position: int):
         """Handle position updates during playback"""
         if self.is_seeking:
@@ -432,32 +507,8 @@ class PreviewWidget(QWidget):
             self.seek_slider.setValue(int(position / (self.total_duration * 1000) * 1000))
             self.seek_slider.blockSignals(False)
         
-        # Update image and subtitle if we have clips
-        image = self._get_current_image(position)
-        
-        # Check if we need to force update to clear placeholder text
-        force_update = self.showing_placeholder
-        
-        if image != self.current_image or force_update:
-            if image:
-                self.set_image(image)
-            else:
-                # Clear image (and placeholder text if any)
-                self.image_label.clear()
-                self.current_image = None
-            
-            self.showing_placeholder = False
-                
-        subtitle = self._get_current_subtitle(position)
-        if subtitle != self.current_subtitle:
-            self.current_subtitle = subtitle
-            if subtitle:
-                self.subtitle_label.setText(subtitle)
-                self.subtitle_label.show()
-                # Center the subtitle label at the bottom
-                self._reposition_subtitle()
-            else:
-                self.subtitle_label.hide()
+        # Update content (image & subtitle)
+        self._update_preview_content(position)
     
     def _reposition_subtitle(self):
         """Resposition subtitle label to be at the bottom center of image area"""
@@ -571,11 +622,8 @@ class PreviewWidget(QWidget):
             self.time_label.setText(
                 f"{self._format_time(position_ms)} / {self._format_time(int(self.total_duration * 1000))}"
             )
-            # Update image preview while seeking
-            if self.image_clips:
-                image = self._get_current_image(position_ms)
-                if image:
-                    self.set_image(image)
+            # Update image and subtitle preview while seeking
+            self._update_preview_content(position_ms)
     
     def resizeEvent(self, event):
         """Handle resize to refresh image scaling and subtitle position"""
