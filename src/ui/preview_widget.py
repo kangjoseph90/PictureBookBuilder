@@ -659,6 +659,11 @@ class PreviewWidget(QWidget):
         self.status_label.setStyleSheet("color: gray;")
         self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
     
+    def closeEvent(self, event):
+        """Handle widget close"""
+        self.cleanup()
+        super().closeEvent(event)
+
     def cleanup(self):
         """Cleanup resources"""
         self.audio_mixer.cleanup()

@@ -320,6 +320,12 @@ class RenderSettingsDialog(QDialog):
         
         super().accept()
 
+    def done(self, r):
+        """Handle dialog close - cleanup resources"""
+        if hasattr(self, 'preview_widget') and self.preview_widget:
+            self.preview_widget.cleanup()
+        super().done(r)
+
     def _on_outline_toggled(self, checked):
         if checked and self.chk_bg.isChecked():
              self.chk_bg.setChecked(False)
