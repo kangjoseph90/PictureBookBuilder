@@ -293,8 +293,24 @@ class TimelineCanvas(QWidget):
     
     def get_clip_at(self, x: float, y: float) -> Optional[TimelineClip]:
         """Get the clip at a given position"""
+        # Check selected clip first (conceptually on top)
+        if self.selected_clip:
+            for clip in self.clips:
+                if clip.id == self.selected_clip:
+                    clip_x = self.time_to_x(clip.start)
+                    clip_width = clip.duration * self.zoom
+                    clip_y = self.get_track_y(clip.track)
+
+                    if (clip_x <= x <= clip_x + clip_width and
+                        clip_y <= y <= clip_y + self.track_height):
+                        return clip
+                    break
+
         # Iterate in reverse so the top-most (last drawn) clip wins when overlapping.
         for clip in reversed(self.clips):
+            if clip.id == self.selected_clip:
+                continue
+
             clip_x = self.time_to_x(clip.start)
             clip_width = clip.duration * self.zoom
             clip_y = self.get_track_y(clip.track)
@@ -310,28 +326,14 @@ class TimelineCanvas(QWidget):
         Returns:
             Tuple of (clip, edge) where edge is "left", "right", or ""
         """
-        # Try to find an edge of the SELECTED clip first (prioritize current selection)
-        if self.selected_clip:
-            for clip in self.clips:
-                if clip.id == self.selected_clip:
-                    clip_x = self.time_to_x(clip.start)
-                    clip_width = clip.duration * self.zoom
-                    clip_y = self.get_track_y(clip.track)
-                    
-                    if clip_y <= y <= clip_y + self.track_height:
-                        if abs(x - clip_x) <= self.EDGE_THRESHOLD:
-                            return clip, "left"
-                        if abs(x - (clip_x + clip_width)) <= self.EDGE_THRESHOLD:
-                            return clip, "right"
-                    break
+        best_clip = None
+        best_edge = ""
+        min_dist = self.EDGE_THRESHOLD + 0.1 # Strictly less than threshold to be valid
 
-        # Then check everything else
-        # Iterate in reverse so the top-most (last drawn) clip edge wins when overlapping.
+        # Iterate all clips to find the CLOSEST edge
+        # We don't prioritize selected clip anymore, just distance.
+        # Reverse order means if distances are equal, we pick the one "on top" (last in list)
         for clip in reversed(self.clips):
-            # Skip if already checked selected
-            if clip.id == self.selected_clip:
-                continue
-                
             clip_x = self.time_to_x(clip.start)
             clip_width = clip.duration * self.zoom
             clip_y = self.get_track_y(clip.track)
@@ -341,14 +343,20 @@ class TimelineCanvas(QWidget):
                 continue
             
             # Check left edge
-            if abs(x - clip_x) <= self.EDGE_THRESHOLD:
-                return clip, "left"
+            dist_left = abs(x - clip_x)
+            if dist_left < min_dist:
+                min_dist = dist_left
+                best_clip = clip
+                best_edge = "left"
             
             # Check right edge
-            if abs(x - (clip_x + clip_width)) <= self.EDGE_THRESHOLD:
-                return clip, "right"
+            dist_right = abs(x - (clip_x + clip_width))
+            if dist_right < min_dist:
+                min_dist = dist_right
+                best_clip = clip
+                best_edge = "right"
         
-        return None, ""
+        return best_clip, best_edge
     
     def resizeEvent(self, event):
         self._background_dirty = True
@@ -379,7 +387,11 @@ class TimelineCanvas(QWidget):
         visible_end = self.x_to_time(self.width())
         
         # Draw clips (only visible ones)
+        # 1. Draw non-selected clips first
         for clip in self.clips:
+            if clip.id == self.selected_clip:
+                continue
+
             # Cull clips outside visible range
             if clip.start + clip.duration < visible_start:
                 continue  # Clip is completely to the left
@@ -387,6 +399,19 @@ class TimelineCanvas(QWidget):
                 continue  # Clip is completely to the right
             
             self._draw_clip(painter, clip)
+
+        # 2. Draw selected clip last (on top)
+        if self.selected_clip:
+            for clip in self.clips:
+                if clip.id == self.selected_clip:
+                     # Cull clips outside visible range
+                    if clip.start + clip.duration < visible_start:
+                        continue
+                    if clip.start > visible_end:
+                        continue
+
+                    self._draw_clip(painter, clip)
+                    break
 
         painter.end()
         self._background_dirty = False
