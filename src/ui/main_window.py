@@ -1127,6 +1127,26 @@ class MainWindow(QMainWindow):
         # Sort audio clips by start time
         audio_clips_sorted = sorted(audio_clips, key=lambda c: c.start)
         
+        # Check for surplus images and ask user what to do
+        surplus_count = len(image_paths) - len(audio_clips_sorted)
+        append_surplus = False
+        
+        if surplus_count > 0:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setWindowTitle("이미지 남음")
+            msg.setText(f"이미지가 {surplus_count}개 남습니다.")
+            msg.setInformativeText(f"총 이미지: {len(image_paths)}개\n오디오 클립: {len(audio_clips_sorted)}개")
+            
+            ignore_btn = msg.addButton("무시하기", QMessageBox.ButtonRole.RejectRole)
+            append_btn = msg.addButton("뒤에 추가", QMessageBox.ButtonRole.AcceptRole)
+            msg.setDefaultButton(ignore_btn)
+            
+            msg.exec()
+            
+            if msg.clickedButton() == append_btn:
+                append_surplus = True
+        
         # Check if there are existing image clips
         existing_image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
         if existing_image_clips:
@@ -1168,6 +1188,34 @@ class MainWindow(QMainWindow):
                 image_path=img_path
             )
             new_image_clips.append(img_clip)
+        
+        # Append surplus images if user requested
+        if append_surplus and surplus_count > 0:
+            # Calculate where to start appending (after last audio clip)
+            if audio_clips_sorted:
+                last_audio = audio_clips_sorted[-1]
+                append_start = last_audio.start + last_audio.duration
+            else:
+                append_start = 0.0
+            
+            # Add surplus images with 5 second duration each
+            for i in range(len(audio_clips_sorted), len(image_paths)):
+                img_path = image_paths[i]
+                img_duration = 5.0  # 5 seconds default
+                
+                img_clip = TimelineClip(
+                    id=self._make_unique_clip_id(f"img_{i}"),
+                    name=Path(img_path).name,
+                    start=append_start,
+                    duration=img_duration,
+                    track=2,
+                    color=QColor("#9E9E9E"),
+                    clip_type="image",
+                    waveform=[],
+                    image_path=img_path
+                )
+                new_image_clips.append(img_clip)
+                append_start += img_duration
 
         # Create undo command
         cmd = AddRemoveClipsCommand(
@@ -1189,8 +1237,11 @@ class MainWindow(QMainWindow):
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
         
         # Show result
-        applied = min(len(image_paths), len(audio_clips_sorted))
-        self.statusBar().showMessage(f"이미지 {applied}개가 적용되었습니다.")
+        applied = len(new_image_clips)
+        if append_surplus and surplus_count > 0:
+            self.statusBar().showMessage(f"이미지 {applied}개가 적용되었습니다. ({surplus_count}개 뒤에 추가됨)")
+        else:
+            self.statusBar().showMessage(f"이미지 {applied}개가 적용되었습니다.")
     
     def _check_ready(self):
         """Check if we have all inputs to start processing"""
