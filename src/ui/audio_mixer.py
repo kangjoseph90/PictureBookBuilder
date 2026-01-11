@@ -64,6 +64,10 @@ class AudioMixer(QObject):
         # Active players for each clip currently playing
         self._active_players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
         
+        # Cached players per speaker (speaker -> (player, audio_output, seek_correction))
+        # These are pre-loaded and ready to seek/play instantly
+        self._player_cache: dict[str, tuple[QMediaPlayer, QAudioOutput, float]] = {}
+        
         # Minimum duration enforced (e.g. by other tracks)
         self._min_duration: float = 0.0
         
@@ -93,6 +97,9 @@ class AudioMixer(QObject):
         Args:
             paths: Dict mapping speaker name to audio file path
         """
+        # Clear cache if paths changed (invalidate old players)
+        if paths != self.speaker_audio_paths:
+            self._clear_player_cache()
         self.speaker_audio_paths = paths
         
     def _update_duration(self):
@@ -260,17 +267,23 @@ class AudioMixer(QObject):
         for clip_id in to_stop:
             self._stop_clip(clip_id)
             
-    def _start_clip(self, clip: ScheduledClip, current_position: float):
-        """Start playing a clip at the appropriate offset.
+    def _get_or_create_cached_player(self, speaker: str) -> Optional[tuple[QMediaPlayer, QAudioOutput, float]]:
+        """Get a cached player for a speaker, or create and cache a new one.
         
         Args:
-            clip: The clip to start
-            current_position: Current timeline position in seconds
+            speaker: Speaker name
+            
+        Returns:
+            Tuple of (player, audio_output, seek_correction) or None if no audio path
         """
+        # Return cached player if exists
+        if speaker in self._player_cache:
+            return self._player_cache[speaker]
+            
         # Get audio path for this speaker
-        audio_path = self.speaker_audio_paths.get(clip.speaker)
+        audio_path = self.speaker_audio_paths.get(speaker)
         if not audio_path or not Path(audio_path).exists():
-            return
+            return None
             
         # Create player and audio output
         audio_output = QAudioOutput()
@@ -278,18 +291,9 @@ class AudioMixer(QObject):
         
         player = QMediaPlayer()
         player.setAudioOutput(audio_output)
-        player.setPlaybackRate(self._playback_rate)
         
-        # Set source
+        # Set source (this triggers the FFmpeg log - but only once per speaker!)
         player.setSource(QUrl.fromLocalFile(audio_path))
-        
-        # Calculate where in the source audio to start
-        # If we're joining mid-clip, we need to offset into the source
-        time_into_clip = current_position - clip.timeline_start
-        source_position_ms = int((clip.source_offset + time_into_clip) * 1000)
-        
-        # Store player
-        self._active_players[clip.clip_id] = (player, audio_output)
         
         # Determine seek correction for non-standard sample rates (Qt/FFmpeg bug workaround)
         seek_correction = 1.0
@@ -304,26 +308,62 @@ class AudioMixer(QObject):
                     seek_correction = framerate / 48000.0
         except Exception:
             pass
-
-        # Wait for media to load, then seek and play
-        def on_media_status_changed(status):
-            if status == QMediaPlayer.MediaStatus.LoadedMedia:
-                if self._playing:
-                    # Recalculate position to account for loading time
-                    current_time_into_clip = self._position - clip.timeline_start
-                    
-                    # Apply correction factor to the calculated source position
-                    raw_source_pos = (clip.source_offset + current_time_into_clip) * 1000
-                    corrected_source_pos = int(raw_source_pos * seek_correction)
-                    
-                    player.setPosition(corrected_source_pos)
-                    player.play()
-                else:
-                    # If paused/stopped while loading, just set the initial position
-                    initial_pos = int(source_position_ms * seek_correction)
-                    player.setPosition(initial_pos)
-                    
-        player.mediaStatusChanged.connect(on_media_status_changed)
+        
+        # Cache and return
+        self._player_cache[speaker] = (player, audio_output, seek_correction)
+        return self._player_cache[speaker]
+    
+    def _start_clip(self, clip: ScheduledClip, current_position: float):
+        """Start playing a clip at the appropriate offset.
+        
+        Args:
+            clip: The clip to start
+            current_position: Current timeline position in seconds
+        """
+        # Get or create cached player for this speaker
+        cached = self._get_or_create_cached_player(clip.speaker)
+        if cached is None:
+            return
+            
+        player, audio_output, seek_correction = cached
+        
+        # Calculate where in the source audio to start
+        time_into_clip = current_position - clip.timeline_start
+        source_position_ms = int((clip.source_offset + time_into_clip) * 1000)
+        
+        # Store reference to track this clip is active
+        self._active_players[clip.clip_id] = (player, audio_output)
+        
+        # Check if player is already loaded
+        if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
+            # Player already loaded, seek and play immediately
+            player.setPlaybackRate(self._playback_rate)
+            corrected_pos = int(source_position_ms * seek_correction)
+            player.setPosition(corrected_pos)
+            if self._playing:
+                player.play()
+        else:
+            # Wait for media to load, then seek and play
+            def on_media_status_changed(status):
+                if status == QMediaPlayer.MediaStatus.LoadedMedia:
+                    player.setPlaybackRate(self._playback_rate)
+                    if self._playing:
+                        # Recalculate position to account for loading time
+                        current_time_into_clip = self._position - clip.timeline_start
+                        raw_source_pos = (clip.source_offset + current_time_into_clip) * 1000
+                        corrected_source_pos = int(raw_source_pos * seek_correction)
+                        player.setPosition(corrected_source_pos)
+                        player.play()
+                    else:
+                        initial_pos = int(source_position_ms * seek_correction)
+                        player.setPosition(initial_pos)
+                    # Disconnect after first load
+                    try:
+                        player.mediaStatusChanged.disconnect(on_media_status_changed)
+                    except Exception:
+                        pass
+                        
+            player.mediaStatusChanged.connect(on_media_status_changed)
         
     def _stop_clip(self, clip_id: str):
         """Stop and cleanup a specific clip player.
@@ -333,20 +373,28 @@ class AudioMixer(QObject):
         """
         if clip_id in self._active_players:
             player, audio_output = self._active_players.pop(clip_id)
+            # Just stop the player, don't delete it (it's cached)
             player.stop()
-            player.setSource(QUrl())
-            player.deleteLater()
-            audio_output.deleteLater()
             
     def _stop_all_players(self):
         """Stop and cleanup all active players"""
         for clip_id in list(self._active_players.keys()):
             self._stop_clip(clip_id)
             
+    def _clear_player_cache(self):
+        """Clear and cleanup all cached players"""
+        for speaker, (player, audio_output, _) in self._player_cache.items():
+            player.stop()
+            player.setSource(QUrl())
+            player.deleteLater()
+            audio_output.deleteLater()
+        self._player_cache.clear()
+        
     def cleanup(self):
         """Cleanup all resources"""
         self.stop()
         self._timer.stop()
+        self._clear_player_cache()
         
     def update_clip(self, clip: ScheduledClip):
         """Update a single clip's data (for real-time editing).
