@@ -42,7 +42,13 @@ def test_cache_creation(canvas, qtbot):
 
     assert canvas._cached_background is not None
     assert canvas._background_dirty == False
-    assert canvas._cached_background.size() == canvas.size()
+    assert canvas._cached_background is not None
+    assert canvas._background_dirty == False
+    
+    # Check size accounts for DPR
+    dpr = canvas.devicePixelRatio()
+    expected_size = canvas.size() * dpr
+    assert canvas._cached_background.size() == expected_size
 
 def test_cache_invalidation_on_resize(canvas):
     # Initial paint

@@ -359,7 +359,10 @@ class TimelineCanvas(QWidget):
         if self.width() <= 0 or self.height() <= 0:
             return
 
-        self._cached_background = QPixmap(self.size())
+        # High-DPI support: multiply size by device pixel ratio
+        dpr = self.devicePixelRatio()
+        self._cached_background = QPixmap(self.size() * dpr)
+        self._cached_background.setDevicePixelRatio(dpr)
         self._cached_background.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(self._cached_background)
@@ -395,8 +398,13 @@ class TimelineCanvas(QWidget):
             return
         
         # Check if we need to update the cache
-        if self._background_dirty or self._cached_background is None or self._cached_background.size() != self.size():
+        # Note: Size check handles resize events roughly, but dpr changes should also trigger invalidation ideally.
+        # However, dpr changes usually come with window moves/resizes which trigger paint events.
+        if (self._background_dirty or 
+            self._cached_background is None or 
+            self._cached_background.size() != self.size() * self.devicePixelRatio()):
             self._update_background_cache()
+
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
