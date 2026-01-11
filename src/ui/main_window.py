@@ -1398,8 +1398,11 @@ class MainWindow(QMainWindow):
         waveform = []
         
         if len(samples) > 0:
-            # Downsample for display (target ~200 samples per clip)
-            target_samples = 200
+            # Downsample for display - use duration-based sampling for consistent resolution
+            # 100 samples per second ensures all clips have similar visual density
+            duration_seconds = len(audio_segment) / 1000.0  # pydub uses milliseconds
+            samples_per_second = 100
+            target_samples = max(50, int(duration_seconds * samples_per_second))
             if len(samples) > target_samples:
                 chunk_size = len(samples) // target_samples
                 downsampled = []
