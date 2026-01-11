@@ -32,6 +32,10 @@ class ImageCache(QObject):
     # Signal when an image is fully loaded (path)
     image_loaded = pyqtSignal(str)
     
+    # Internal signal to transfer data from thread to main thread
+    # args: path, original_qimage, small_qimage, timeline_qimage
+    _image_processed = pyqtSignal(str, QImage, QImage, QImage)
+    
     def __init__(self, max_workers: int = 4):
         super().__init__()
         self._originals: dict[str, QPixmap] = {}  # path -> original pixmap
@@ -40,6 +44,9 @@ class ImageCache(QObject):
         self._lock = threading.Lock()
         self._pending: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        
+        # Connect internal signal to main thread handler
+        self._image_processed.connect(self._on_image_processed)
     
     def load_images(self, paths: list[str]):
         """
@@ -60,7 +67,7 @@ class ImageCache(QObject):
             self._executor.submit(self._load_image, path)
     
     def _load_image(self, path: str):
-        """Load image and generate thumbnails in background"""
+        """Load image and generate thumbnails in background (Thread-Safe QImage ops only)"""
         try:
             # Load original (QImage is thread-safe)
             image = QImage(path)
@@ -69,34 +76,45 @@ class ImageCache(QObject):
                     self._pending.discard(path)
                 return
             
-            # Convert to pixmap
-            original = QPixmap.fromImage(image)
-            
-            # Generate thumbnails
-            thumb_small = original.scaled(
+            # Generate thumbnails using QImage (thread-safe)
+            thumb_small = image.scaled(
                 THUMBNAIL_SIZE_SMALL,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             
-            thumb_timeline = original.scaled(
+            thumb_timeline = image.scaled(
                 THUMBNAIL_SIZE_TIMELINE,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             
-            # Store all variants
-            with self._lock:
-                self._originals[path] = original
-                self._thumbnails_small[path] = thumb_small
-                self._thumbnails_timeline[path] = thumb_timeline
-                self._pending.discard(path)
-            
-            # Notify completion
-            self.image_loaded.emit(path)
+            # Send QImages to main thread for QPixmap conversion
+            self._image_processed.emit(path, image, thumb_small, thumb_timeline)
             
         except Exception as e:
             print(f"Error loading image {path}: {e}")
+            with self._lock:
+                self._pending.discard(path)
+
+    def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage):
+        """Handle processed images on the main thread"""
+        try:
+            # Convert to QPixmap (Must be done on main thread)
+            pix_original = QPixmap.fromImage(original)
+            pix_small = QPixmap.fromImage(small)
+            pix_timeline = QPixmap.fromImage(timeline)
+            
+            with self._lock:
+                self._originals[path] = pix_original
+                self._thumbnails_small[path] = pix_small
+                self._thumbnails_timeline[path] = pix_timeline
+                self._pending.discard(path)
+            
+            self.image_loaded.emit(path)
+            
+        except Exception as e:
+            print(f"Error converting converted images for {path}: {e}")
             with self._lock:
                 self._pending.discard(path)
     
@@ -129,7 +147,14 @@ class ImageCache(QObject):
     
     def cleanup(self):
         """Cleanup resources"""
-        self._executor.shutdown(wait=False)
+        # Cancel any pending futures and shutdown
+        try:
+            # Python 3.9+ supports cancel_futures
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Fallback for older python
+            self._executor.shutdown(wait=False)
+        
         self.clear()
 
 
@@ -143,3 +168,4 @@ def get_image_cache() -> ImageCache:
     if _global_cache is None:
         _global_cache = ImageCache()
     return _global_cache
+
