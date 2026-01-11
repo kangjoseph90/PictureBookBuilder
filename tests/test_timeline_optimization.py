@@ -111,3 +111,56 @@ def test_selection_clear_invalidates_cache(canvas, qtbot):
 
     assert canvas.selected_clip is None
     assert canvas._background_dirty == True
+
+
+def test_zoom_invalidates_cache(canvas, qtbot):
+    """Test that zooming via wheel event invalidates the background cache"""
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtCore import QPoint
+    
+    # Initial paint
+    canvas.repaint()
+    assert canvas._background_dirty == False
+    old_zoom = canvas.zoom
+    
+    # Simulate Ctrl+wheel for zoom
+    # Create wheel event with Ctrl modifier
+    event = QWheelEvent(
+        QPointF(400, 100),  # position
+        QPointF(400, 100),  # global position
+        QPoint(0, 120),     # pixel delta
+        QPoint(0, 120),     # angle delta (120 = 1 step)
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False  # inverted
+    )
+    canvas.wheelEvent(event)
+    
+    assert canvas.zoom != old_zoom
+    assert canvas._background_dirty == True
+
+
+def test_scroll_wheel_invalidates_cache(canvas, qtbot):
+    """Test that scrolling via wheel event invalidates the background cache"""
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtCore import QPoint
+    
+    # Initial paint
+    canvas.repaint()
+    assert canvas._background_dirty == False
+    
+    # Simulate scroll (no Ctrl)
+    event = QWheelEvent(
+        QPointF(400, 100),  # position
+        QPointF(400, 100),  # global position
+        QPoint(0, -120),    # pixel delta (negative = scroll right)
+        QPoint(0, -120),    # angle delta
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False
+    )
+    canvas.wheelEvent(event)
+    
+    assert canvas._background_dirty == True

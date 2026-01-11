@@ -386,6 +386,10 @@ class TimelineCanvas(QWidget):
 
     def paintEvent(self, event: QPaintEvent):
         """Paint the timeline"""
+        # Early return for zero-size widget
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        
         # Check if we need to update the cache
         if self._background_dirty or self._cached_background is None or self._cached_background.size() != self.size():
             self._update_background_cache()
