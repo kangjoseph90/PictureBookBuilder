@@ -531,16 +531,16 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
         
         # --- File Menu ---
-        file_menu = menu_bar.addMenu("파일(&F)")
+        file_menu = menu_bar.addMenu("파일")
         
         # New project
-        new_action = QAction("새 프로젝트(&N)", self)
+        new_action = QAction("새 프로젝트", self)
         new_action.setShortcut(QKeySequence.StandardKey.New)
         new_action.triggered.connect(self._new_project)
         file_menu.addAction(new_action)
         
         # Open project
-        open_action = QAction("프로젝트 열기(&O)...", self)
+        open_action = QAction("프로젝트 열기...", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_project)
         file_menu.addAction(open_action)
@@ -548,13 +548,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         # Save project
-        save_action = QAction("저장(&S)", self)
+        save_action = QAction("저장", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self._save_project)
         file_menu.addAction(save_action)
         
         # Save as
-        save_as_action = QAction("다른 이름으로 저장(&A)...", self)
+        save_as_action = QAction("다른 이름으로 저장...", self)
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_as_action.triggered.connect(self._save_project_as)
         file_menu.addAction(save_as_action)
@@ -562,34 +562,34 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         # Settings (Moved to File menu)
-        settings_action = QAction("설정(&T)...", self)
+        settings_action = QAction("설정...", self)
         settings_action.triggered.connect(self._show_settings)
         file_menu.addAction(settings_action)
         
         file_menu.addSeparator()
         
-        exit_action = QAction("종료(&X)", self)
+        exit_action = QAction("종료", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
         # --- Edit Menu ---
-        edit_menu = menu_bar.addMenu("편집(&E)")
+        edit_menu = menu_bar.addMenu("편집")
 
-        self.undo_action = QAction("실행 취소(&U)", self)
+        self.undo_action = QAction("실행 취소", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self._undo)
         self.undo_action.setEnabled(False)
         edit_menu.addAction(self.undo_action)
 
-        self.redo_action = QAction("다시 실행(&R)", self)
+        self.redo_action = QAction("다시 실행", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self._redo)
         self.redo_action.setEnabled(False)
         edit_menu.addAction(self.redo_action)
 
         # --- Project Menu ---
-        project_menu = menu_bar.addMenu("프로젝트(&P)")
+        project_menu = menu_bar.addMenu("프로젝트")
         
         load_script_action = QAction("스크립트 불러오기...", self)
         load_script_action.triggered.connect(self._load_script)
@@ -600,7 +600,7 @@ class MainWindow(QMainWindow):
         project_menu.addAction(load_images_action)
         
         # --- Tools Menu ---
-        tools_menu = menu_bar.addMenu("도구(&T)")
+        tools_menu = menu_bar.addMenu("도구")
         
         self.action_process = QAction("처리 시작", self)
         self.action_process.setShortcut(QKeySequence("F5"))
@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.action_apply_images)
         
         # --- Export Menu ---
-        export_menu = menu_bar.addMenu("내보내기(&E)")
+        export_menu = menu_bar.addMenu("내보내기")
         
         self.action_render = QAction("영상 렌더링...", self)
         self.action_render.setShortcut(QKeySequence("F9"))
