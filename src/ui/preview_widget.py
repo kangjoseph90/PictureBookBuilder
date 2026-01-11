@@ -209,7 +209,7 @@ class PreviewWidget(QWidget):
             QLabel {
                 color: white;
                 background-color: rgba(0, 0, 0, 160);
-                padding: 8px 15px;
+                padding: 4px 8px;
                 border-radius: 4px;
                 font-size: 16px;
                 font-weight: bold;
