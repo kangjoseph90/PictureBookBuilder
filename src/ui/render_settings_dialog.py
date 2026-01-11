@@ -3,7 +3,7 @@ Render Settings Dialog - UI for configuring video and subtitle rendering setting
 """
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QLabel, QSpinBox, QComboBox, QCheckBox, QPushButton,
+    QLabel, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QPushButton,
     QFontComboBox, QColorDialog, QTabWidget, QWidget, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent, QObject
@@ -41,6 +41,7 @@ class RenderSettingsDialog(QDialog):
             'subtitle_enabled': config.render_subtitle_enabled,
             'font_family': config.render_font_family,
             'font_size': config.render_font_size,
+            'line_spacing': config.render_line_spacing,
             'font_color': config.render_font_color,
             'outline_enabled': config.render_outline_enabled,
             'outline_width': config.render_outline_width,
@@ -202,6 +203,14 @@ class RenderSettingsDialog(QDialog):
         self.spin_font_size.valueChanged.connect(self._on_setting_changed)
         sub_form.addRow("크기:", self.spin_font_size)
 
+        # 5.1 Line Spacing
+        self.spin_line_spacing = QDoubleSpinBox()
+        self.spin_line_spacing.setRange(0.5, 3.0)
+        self.spin_line_spacing.setSingleStep(0.1)
+        self.spin_line_spacing.setValue(self.settings['line_spacing'])
+        self.spin_line_spacing.valueChanged.connect(self._on_setting_changed)
+        sub_form.addRow("줄간격:", self.spin_line_spacing)
+
         # 6. Position
         self.combo_position = QComboBox()
         self.combo_position.addItems(["Bottom", "Top", "Center"])
@@ -297,6 +306,7 @@ class RenderSettingsDialog(QDialog):
         config.render_subtitle_enabled = self.settings['subtitle_enabled']
         config.render_font_family = self.settings['font_family']
         config.render_font_size = self.settings['font_size']
+        config.render_line_spacing = self.settings['line_spacing']
         config.render_font_color = self.settings['font_color']
         config.render_outline_enabled = self.settings['outline_enabled']
         config.render_outline_width = self.settings['outline_width']
@@ -327,6 +337,7 @@ class RenderSettingsDialog(QDialog):
         self.settings['subtitle_enabled'] = self.chk_sub_enable.isChecked()
         self.settings['font_family'] = self.font_combo.currentFont().family()
         self.settings['font_size'] = self.spin_font_size.value()
+        self.settings['line_spacing'] = self.spin_line_spacing.value()
         self.settings['outline_enabled'] = self.chk_outline.isChecked()
         self.settings['outline_width'] = self.spin_outline_width.value()
         self.settings['bg_enabled'] = self.chk_bg.isChecked()
@@ -378,6 +389,9 @@ class RenderSettingsDialog(QDialog):
 
         # Set Text Color directly
         self.preview_widget.subtitle_label.set_text_color(self.settings['font_color'])
+
+        # Set Line Spacing directly
+        self.preview_widget.subtitle_label.set_line_spacing(self.settings['line_spacing'])
 
         # Set Outline directly
         if self.settings['outline_enabled'] and self.settings['outline_width'] > 0:
@@ -466,6 +480,7 @@ class RenderSettingsDialog(QDialog):
             'subtitle_enabled': config.render_subtitle_enabled,
             'font_family': config.render_font_family,
             'font_size': config.render_font_size,
+            'line_spacing': config.render_line_spacing,
             'font_color': config.render_font_color,
             'outline_enabled': config.render_outline_enabled,
             'outline_width': config.render_outline_width,
@@ -484,6 +499,7 @@ class RenderSettingsDialog(QDialog):
         self.chk_sub_enable.setChecked(self.settings['subtitle_enabled'])
         self.font_combo.setCurrentFont(QFont(self.settings['font_family']))
         self.spin_font_size.setValue(self.settings['font_size'])
+        self.spin_line_spacing.setValue(self.settings['line_spacing'])
         self.chk_outline.setChecked(self.settings['outline_enabled'])
         self.spin_outline_width.setValue(self.settings['outline_width'])
         self.chk_bg.setChecked(self.settings['bg_enabled'])

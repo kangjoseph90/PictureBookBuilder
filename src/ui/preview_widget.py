@@ -27,6 +27,12 @@ class StrokedLabel(QLabel):
         self._outline_width = 0
         self._outline_color = QColor(0, 0, 0)
         self._text_color = QColor(255, 255, 255)
+        self._line_spacing = 1.4
+        
+    def set_line_spacing(self, spacing):
+        """Set line spacing multiplier (e.g., 1.4)"""
+        self._line_spacing = spacing
+        self.update()
         
     def set_outline(self, width, color):
         """Set outline (stroke) properties"""
@@ -65,9 +71,9 @@ class StrokedLabel(QLabel):
         rect = self.contentsRect()
         
         # Calculate total text block height (using strict spacing like subtitle renderer often does)
-        # Using 1.2 line height roughly
-        leading = line_height * 0.2
-        total_text_height = len(lines) * (line_height + leading) - leading
+        # Using custom line spacing
+        leading = line_height * (self._line_spacing - 1.0)
+        total_text_height = len(lines) * line_height + (len(lines) - 1) * leading
         
         # Center vertically
         start_y = rect.center().y() - total_text_height / 2 + metrics.ascent()
@@ -161,7 +167,6 @@ class PreviewWidget(QWidget):
                 border-radius: 4px;
                 font-size: 16px;
                 font-weight: bold;
-                line-height: 1.4;
             }
         """)
         self.subtitle_label.hide()

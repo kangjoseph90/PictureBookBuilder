@@ -26,6 +26,7 @@ from config import (
     RENDER_SUBTITLE_ENABLED,
     RENDER_FONT_FAMILY,
     RENDER_FONT_SIZE,
+    RENDER_LINE_SPACING,
     RENDER_FONT_COLOR,
     RENDER_OUTLINE_ENABLED,
     RENDER_OUTLINE_WIDTH,
@@ -69,6 +70,7 @@ class RuntimeConfig:
     render_subtitle_enabled: bool = RENDER_SUBTITLE_ENABLED
     render_font_family: str = RENDER_FONT_FAMILY
     render_font_size: int = RENDER_FONT_SIZE
+    render_line_spacing: float = RENDER_LINE_SPACING
     render_font_color: str = RENDER_FONT_COLOR
     render_outline_enabled: bool = RENDER_OUTLINE_ENABLED
     render_outline_width: int = RENDER_OUTLINE_WIDTH
@@ -130,6 +132,7 @@ class RuntimeConfig:
         self.render_subtitle_enabled = RENDER_SUBTITLE_ENABLED
         self.render_font_family = RENDER_FONT_FAMILY
         self.render_font_size = RENDER_FONT_SIZE
+        self.render_line_spacing = RENDER_LINE_SPACING
         self.render_font_color = RENDER_FONT_COLOR
         self.render_outline_enabled = RENDER_OUTLINE_ENABLED
         self.render_outline_width = RENDER_OUTLINE_WIDTH

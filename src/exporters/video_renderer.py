@@ -114,6 +114,7 @@ class VideoRenderer:
         s = settings or {}
         font_name = s.get('font_family', 'Malgun Gothic')
         font_size = s.get('font_size', 32)
+        line_spacing = s.get('line_spacing', 1.4)
         
         # Colors
         font_color = self._to_ass_color(s.get('font_color', '#FFFFFF'), 0)
@@ -140,16 +141,18 @@ class VideoRenderer:
             shadow_depth = 0
             back_color = "&H00000000"
 
-        # Alignment
-        pos = s.get('position', 'Bottom')
-        if pos == 'Top':
-            align = 8 # Top Center
-        elif pos == 'Center':
-            align = 5 # Middle Center
-        else:
-            align = 2 # Bottom Center
-        
+        # Alignment Logic
+        pos_setting = s.get('position', 'Bottom')
         margin_v = s.get('margin_v', 48)
+        
+        # We will use \pos(x,y) override for precise line spacing control
+        # Base alignment for text block processing
+        if pos_setting == 'Top':
+            base_align = 8 # Top Center
+        elif pos_setting == 'Center':
+            base_align = 5 # Middle Center
+        else:
+            base_align = 2 # Bottom Center
 
         # ASS Header
         content = [
@@ -161,8 +164,9 @@ class VideoRenderer:
             "",
             "[V4+ Styles]",
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-            # Style line
-            f"Style: Default,{font_name},{font_size},{font_color},&H000000FF,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline_width},{shadow_depth},{align},10,10,{margin_v},1",
+            # Style line - Note Alignment is set to 5 (Center) as we might predominantly rely on \pos or center logic
+            # Actually, let's keep base_align for the style to have sensible defaults
+            f"Style: Default,{font_name},{font_size},{font_color},&H000000FF,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline_width},{shadow_depth},{base_align},10,10,{margin_v},1",
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -170,12 +174,79 @@ class VideoRenderer:
 
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(content) + "\n")
+            
+            x_pos = width / 2
+            
             for sub in subs:
                 start = self._format_ass_time(sub.start_time)
                 end = self._format_ass_time(sub.end_time)
-                # Escape newlines
-                text = sub.text.replace("\n", "\\N")
-                f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+                
+                # Split lines for custom spacing
+                lines = sub.text.replace('\r\n', '\n').split('\n')
+                
+                if not lines: 
+                    continue
+
+                # Calculate positions
+                # Effective line height for spacing
+                # This is the distance between the vertical anchor points of consecutive lines
+                eff_h = font_size * line_spacing
+                
+                y_positions = []
+                num_lines = len(lines)
+                
+                if pos_setting == 'Bottom':
+                    # Bottom-up stacking. \an2 (Bottom Center) means Y is the bottom of the text.
+                    # The bottom-most line's bottom edge is at (height - margin_v).
+                    base_y = height - margin_v
+                    for i in range(num_lines):
+                        # The last line (index num_lines-1) is at base_y.
+                        # Lines above it are at base_y - (offset_from_bottom * eff_h).
+                        # offset_from_bottom for line `i` is `(num_lines - 1 - i)`.
+                        y = base_y - ((num_lines - 1 - i) * eff_h)
+                        y_positions.append(y)
+                        
+                elif pos_setting == 'Top':
+                    # Top-down stacking. \an8 (Top Center) means Y is the top of the text.
+                    # The top-most line's top edge is at margin_v.
+                    base_y = margin_v
+                    for i in range(num_lines):
+                        y = base_y + (i * eff_h)
+                        y_positions.append(y)
+                        
+                else: # Center
+                    # Centered stacking. \an5 (Middle Center) means Y is the vertical center of the text.
+                    # Calculate the total vertical span of the text block (from center of first to center of last line).
+                    total_span = (num_lines - 1) * eff_h
+                    
+                    # The center of the entire block should be at height / 2.
+                    # The center of the first line will be: (height / 2) - (total_span / 2).
+                    first_line_center_y = (height / 2) - (total_span / 2)
+                    
+                    for i in range(num_lines):
+                        y = first_line_center_y + (i * eff_h)
+                        y_positions.append(y)
+
+                # Write events for each line
+                for i, line in enumerate(lines):
+                    if not line.strip(): continue # Skip empty lines if they result from splitting
+
+                    y = y_positions[i]
+                    
+                    # Override alignment for this specific line to ensure \pos works as expected logic
+                    # \an2 for Bottom/Base, \an8 for Top, \an5 for Center
+                    if pos_setting == 'Bottom':
+                        align_tag = r"\an2"
+                    elif pos_setting == 'Top':
+                        align_tag = r"\an8"
+                    else: # Center
+                        align_tag = r"\an5"
+                        
+                    # Pos tag
+                    pos_tag = f"\\pos({int(x_pos)},{int(y)})"
+                    
+                    full_text = f"{{ {align_tag}{pos_tag} }}{line}"
+                    f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{full_text}\n")
         
         return path
 
