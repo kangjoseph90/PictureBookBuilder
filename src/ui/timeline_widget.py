@@ -342,17 +342,25 @@ class TimelineCanvas(QWidget):
             if not (clip_y <= y <= clip_y + self.track_height):
                 continue
             
+            # Determine if mouse is "inside" the clip (visually)
+            # This is used as a tie-breaker: if distances are similar, prefer the clip
+            # that physically contains the mouse cursor.
+            is_inside = clip_x <= x <= (clip_x + clip_width)
+            bias = 0.001 if is_inside else 0.0
+
             # Check left edge
             dist_left = abs(x - clip_x)
-            if dist_left < min_dist:
-                min_dist = dist_left
+            # Use effective distance (actual distance - bias)
+            # If inside, effective distance is slightly smaller, winning the tie.
+            if (dist_left - bias) < min_dist:
+                min_dist = dist_left - bias
                 best_clip = clip
                 best_edge = "left"
             
             # Check right edge
             dist_right = abs(x - (clip_x + clip_width))
-            if dist_right < min_dist:
-                min_dist = dist_right
+            if (dist_right - bias) < min_dist:
+                min_dist = dist_right - bias
                 best_clip = clip
                 best_edge = "right"
         
