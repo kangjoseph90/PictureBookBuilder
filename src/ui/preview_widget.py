@@ -11,13 +11,102 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QStyle, QComboBox
+    QSlider, QStyle, QComboBox, QStyleOption
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics
 
 from .audio_mixer import AudioMixer, ScheduledClip
+
+
+class StrokedLabel(QLabel):
+    """QLabel subclass that supports text outline/stroke rendering"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._outline_width = 0
+        self._outline_color = QColor(0, 0, 0)
+        self._text_color = QColor(255, 255, 255)
+        
+    def set_outline(self, width, color):
+        """Set outline (stroke) properties"""
+        self._outline_width = width
+        self._outline_color = QColor(color) if color else QColor(0,0,0)
+        self.update()
+        
+    def set_text_color(self, color):
+        """Set text fill color"""
+        self._text_color = QColor(color) if color else QColor(255,255,255)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 1. Draw Background (using stylesheet style if available via style options)
+        opt = QStyleOption()
+        opt.initFrom(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, painter, self)
+        
+        if not self.text():
+            return
+            
+        # 2. Setup Font & Path
+        painter.setFont(self.font())
+        path = QPainterPath()
+        metrics = self.fontMetrics()
+        
+        # Handle multiline text
+        lines = self.text().split('\n')
+        line_height = metrics.height()
+        
+        # Calculate positioning
+        # We assume styling provides padding, but we need to calculate centering within contentsRect
+        rect = self.contentsRect()
+        
+        # Calculate total text block height (using strict spacing like subtitle renderer often does)
+        # Using 1.2 line height roughly
+        leading = line_height * 0.2
+        total_text_height = len(lines) * (line_height + leading) - leading
+        
+        # Center vertically
+        start_y = rect.center().y() - total_text_height / 2 + metrics.ascent()
+        
+        current_y = start_y
+        for line in lines:
+            if not line:
+                current_y += line_height + leading
+                continue
+                
+            line_width = metrics.horizontalAdvance(line)
+            
+            # Horizontal alignment
+            x = rect.left()
+            if self.alignment() & Qt.AlignmentFlag.AlignHCenter:
+                x = rect.center().x() - line_width / 2
+            elif self.alignment() & Qt.AlignmentFlag.AlignRight:
+                x = rect.right() - line_width
+            
+            path.addText(x, current_y, self.font(), line)
+            current_y += line_height + leading
+
+        # 3. Draw Outline (Stroke)
+        if self._outline_width > 0:
+            pen = QPen(self._outline_color)
+            # Width * 2 because stroke is centered on the path boundary,
+            # so half is inside (covered by fill) and half is outside.
+            # We want 'width' pixels visible outside.
+            pen.setWidthF(self._outline_width * 2) 
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+            
+        # 4. Draw Text Fill
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._text_color)
+        painter.drawPath(path)
 
 
 class PreviewWidget(QWidget):
@@ -35,6 +124,7 @@ class PreviewWidget(QWidget):
         self.subtitle_clips: list[dict] = []  # [{'text': str, 'start': float, 'end': float}]
         self.images: list[str] = []  # Added for backward compatibility/internal use
         self.current_subtitle: Optional[str] = None
+        self.showing_placeholder = True
         
         self._setup_ui()
         self._setup_audio_mixer()
@@ -58,7 +148,8 @@ class PreviewWidget(QWidget):
         self.image_label.setText("미리보기\n\n처리 완료 후 재생 버튼을 누르세요")
         
         # Subtitle overlay (on top of image)
-        self.subtitle_label = QLabel(self.image_label)
+        # Subtitle overlay (on top of image)
+        self.subtitle_label = StrokedLabel(self.image_label)
         self.subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Word wrap disabled - subtitles should only break at explicit \n
         self.subtitle_label.setWordWrap(False)
@@ -338,13 +429,19 @@ class PreviewWidget(QWidget):
         
         # Update image and subtitle if we have clips
         image = self._get_current_image(position)
-        if image != self.current_image:
+        
+        # Check if we need to force update to clear placeholder text
+        force_update = self.showing_placeholder
+        
+        if image != self.current_image or force_update:
             if image:
                 self.set_image(image)
             else:
-                # Clear image
+                # Clear image (and placeholder text if any)
                 self.image_label.clear()
                 self.current_image = None
+            
+            self.showing_placeholder = False
                 
         subtitle = self._get_current_subtitle(position)
         if subtitle != self.current_subtitle:
@@ -500,6 +597,7 @@ class PreviewWidget(QWidget):
         # Reset UI
         self.image_label.clear()
         self.image_label.setText("미리보기\n\n처리 완료 후 재생 버튼을 누르세요")
+        self.showing_placeholder = True
         self.subtitle_label.hide()
         self.subtitle_label.setText("")
         self.time_label.setText("0:00 / 0:00")

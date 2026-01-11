@@ -25,6 +25,7 @@ from .clip import TimelineClip
 from .undo_system import UndoStack, ModifyClipsCommand, AddRemoveClipsCommand, ReplaceAllClipsCommand, MacroCommand
 from .preview_widget import PreviewWidget
 from .settings_widget import SettingsWidget, SettingsDialog
+from .render_settings_dialog import RenderSettingsDialog
 from .theme import ModernDarkTheme
 from config import DEFAULT_GAP_SECONDS
 from runtime_config import get_config, set_config, RuntimeConfig
@@ -164,12 +165,13 @@ class RenderThread(QThread):
     progress = pyqtSignal(int, str)  # progress %, status message
     finished = pyqtSignal(bool, str)  # success, message
     
-    def __init__(self, image_clips, audio_path, subtitle_clips, output_path):
+    def __init__(self, image_clips, audio_path, subtitle_clips, output_path, render_settings=None):
         super().__init__()
         self.image_clips = image_clips
         self.audio_path = audio_path
         self.subtitle_clips = subtitle_clips
         self.output_path = output_path
+        self.render_settings = render_settings
     
     def run(self):
         try:
@@ -199,7 +201,12 @@ class RenderThread(QThread):
                     for sub in self.subtitle_clips
                 ]
             
-            renderer = VideoRenderer()
+            # Initialize renderer with settings if available
+            width = self.render_settings.get('width', 1920) if self.render_settings else 1920
+            height = self.render_settings.get('height', 1080) if self.render_settings else 1080
+            fps = self.render_settings.get('fps', 30) if self.render_settings else 30
+
+            renderer = VideoRenderer(width=width, height=height, fps=fps)
             self.progress.emit(10, "비디오 렌더링 중...")
             
             # Render with progress callback
@@ -208,7 +215,8 @@ class RenderThread(QThread):
                 audio_path=str(self.audio_path),
                 subtitles=subtitles,
                 output_path=str(self.output_path),
-                progress_callback=self._on_render_progress
+                progress_callback=self._on_render_progress,
+                settings=self.render_settings
             )
             
             self.progress.emit(100, "완료")
@@ -2706,6 +2714,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "오류", "렌더링할 오디오 클립이 없습니다.")
             return
         
+        # Show render settings dialog first
+        dialog = RenderSettingsDialog(self, clips=self.timeline_widget.canvas.clips, speaker_audio_map=self.speaker_audio_map)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        render_settings = dialog.get_settings()
+
         path, _ = QFileDialog.getSaveFileName(
             self, "영상 저장", "output.mp4", "Video Files (*.mp4);;Audio Files (*.wav)"
         )
@@ -2725,6 +2740,10 @@ class MainWindow(QMainWindow):
         image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
         subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
         
+        # Filter subtitles if disabled in settings
+        if not render_settings.get('subtitle_enabled', True):
+            subtitle_clips = []
+
         # Generate temp audio file for rendering
         import tempfile
         import os
@@ -2742,7 +2761,8 @@ class MainWindow(QMainWindow):
             image_clips=image_clips,
             audio_path=self._temp_render_audio,
             subtitle_clips=subtitle_clips,
-            output_path=path
+            output_path=path,
+            render_settings=render_settings
         )
         self.render_thread.progress.connect(self._on_render_progress)
         self.render_thread.finished.connect(self._on_render_finished)

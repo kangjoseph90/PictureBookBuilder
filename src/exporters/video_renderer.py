@@ -78,19 +78,28 @@ class VideoRenderer:
         except Exception:
             return 0.0
 
-    def _format_srt_time(self, seconds: float) -> str:
+    def _format_ass_time(self, seconds: float) -> str:
+        """Format time for ASS: H:MM:SS.cc"""
         if seconds < 0:
             seconds = 0.0
-        ms = int(round(seconds * 1000.0))
-        h = ms // 3_600_000
-        ms %= 3_600_000
-        m = ms // 60_000
-        ms %= 60_000
-        s = ms // 1000
-        ms %= 1000
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = seconds % 60
+        cs = int(round((s - int(s)) * 100))
+        s = int(s)
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    def _write_temp_srt(self, subtitles: list[SubtitleSegment]) -> str:
+    def _to_ass_color(self, hex_color: str, alpha: int = 0) -> str:
+        """Convert #RRGGBB to &HAABBGGRR. Alpha: 0 (opaque) to 255 (transparent)."""
+        if hex_color.startswith('#'):
+            hex_color = hex_color[1:]
+        
+        if len(hex_color) == 6:
+            r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
+            return f"&H{alpha:02X}{b}{g}{r}" # ASS is BBGGRR
+        return f"&H{alpha:02X}FFFFFF"
+
+    def _write_temp_ass(self, subtitles: list[SubtitleSegment], settings: dict, width: int, height: int) -> str:
         subs = [
             SubtitleSegment(text=(s.text or "").strip(), start_time=float(s.start_time), end_time=float(s.end_time))
             for s in subtitles
@@ -98,15 +107,76 @@ class VideoRenderer:
         ]
         subs.sort(key=lambda s: (s.start_time, s.end_time))
 
-        fd, path = tempfile.mkstemp(prefix="pbb_", suffix=".srt")
+        fd, path = tempfile.mkstemp(prefix="pbb_", suffix=".ass")
         os.close(fd)
 
-        with open(path, "w", encoding="utf-8") as f:
-            for i, s in enumerate(subs, start=1):
-                f.write(f"{i}\n")
-                f.write(f"{self._format_srt_time(s.start_time)} --> {self._format_srt_time(s.end_time)}\n")
-                f.write(s.text + "\n\n")
+        # Settings extraction
+        s = settings or {}
+        font_name = s.get('font_family', 'Malgun Gothic')
+        font_size = s.get('font_size', 32)
+        
+        # Colors
+        font_color = self._to_ass_color(s.get('font_color', '#FFFFFF'), 0)
+        
+        # Outline / Background configuration
+        is_bg = s.get('bg_enabled', False)
+        
+        qt_alpha = s.get('bg_alpha', 160)
+        ass_alpha = max(0, min(255, 255 - qt_alpha))
+        
+        if is_bg:
+            border_style = 3  # Opaque Box
+            outline_color = self._to_ass_color(s.get('bg_color', '#000000'), ass_alpha)
+            # Outline width acts as padding for the box
+            outline_width = 2
+            shadow_depth = 0
+            back_color = "&H00000000"
+        else:
+            border_style = 1  # Outline
+            outline_enabled = s.get('outline_enabled', True)
+            w = s.get('outline_width', 2)
+            outline_width = w if outline_enabled else 0
+            outline_color = self._to_ass_color(s.get('outline_color', '#000000'), 0)
+            shadow_depth = 0
+            back_color = "&H00000000"
 
+        # Alignment
+        pos = s.get('position', 'Bottom')
+        if pos == 'Top':
+            align = 8 # Top Center
+        elif pos == 'Center':
+            align = 5 # Middle Center
+        else:
+            align = 2 # Bottom Center
+        
+        margin_v = s.get('margin_v', 48)
+
+        # ASS Header
+        content = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            f"PlayResX: {width}",
+            f"PlayResY: {height}",
+            "WrapStyle: 1", 
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            # Style line
+            f"Style: Default,{font_name},{font_size},{font_color},&H000000FF,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline_width},{shadow_depth},{align},10,10,{margin_v},1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+        ]
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(content) + "\n")
+            for sub in subs:
+                start = self._format_ass_time(sub.start_time)
+                end = self._format_ass_time(sub.end_time)
+                # Escape newlines
+                text = sub.text.replace("\n", "\\N")
+                f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+        
         return path
 
     def _escape_path_for_ffmpeg_filter(self, path: str) -> str:
@@ -123,6 +193,7 @@ class VideoRenderer:
         subtitles: list[SubtitleSegment] | None = None,
         output_path: str | Path = "output.mp4",
         progress_callback=None,
+        settings: dict = None,
     ) -> None:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,19 +212,14 @@ class VideoRenderer:
         total_duration = max(audio_duration, max_image_end)
 
         # Build contiguous visuals covering full audio duration.
-        # If image clips overlap, choose the one on the highest track (top-most).
         segments: list[ImageSegment] = []
         for seg in images:
-            if not seg.image_path:
+            if not seg.image_path or not Path(seg.image_path).exists():
                 continue
             start = max(0.0, float(seg.start_time))
             end = min(total_duration, float(seg.end_time))
-            if end <= start:
-                continue
-            if not Path(seg.image_path).exists():
-                # Missing image -> treat as black
-                continue
-            segments.append(ImageSegment(seg.image_path, start, end, int(getattr(seg, "track", 0))))
+            if end > start:
+                segments.append(ImageSegment(seg.image_path, start, end, int(getattr(seg, "track", 0))))
 
         def _q(t: float) -> float:
             # Quantize to milliseconds to avoid floating point boundary noise
@@ -190,9 +256,9 @@ class VideoRenderer:
         if not visuals:
             visuals = [(None, total_duration)]
 
-        srt_path = None
+        ass_path = None
         if subtitles:
-            srt_path = self._write_temp_srt(subtitles)
+            ass_path = self._write_temp_ass(subtitles, settings, self.width, self.height)
 
         try:
             if progress_callback:
@@ -219,7 +285,7 @@ class VideoRenderer:
             audio_input_index = len(visuals)
             cmd += ["-i", audio_path]
 
-            # Filtergraph
+            # Filtergraph: Transform each input to match target resolution
             filter_parts: list[str] = []
             for i in range(len(visuals)):
                 filter_parts.append(
@@ -230,11 +296,10 @@ class VideoRenderer:
             concat_inputs = "".join([f"[v{i}]" for i in range(len(visuals))])
             filter_parts.append(f"{concat_inputs}concat=n={len(visuals)}:v=1:a=0[vcat]")
 
-            if srt_path:
-                srt_escaped = self._escape_path_for_ffmpeg_filter(srt_path)
-                # Match preview-like size: smaller font, bottom-center.
-                style = "Fontname=Malgun Gothic,Fontsize=32,Outline=2,Shadow=0,Alignment=2,MarginV=48"
-                filter_parts.append(f"[vcat]subtitles='{srt_escaped}':force_style='{style}'[vout]")
+            if ass_path:
+                ass_escaped = self._escape_path_for_ffmpeg_filter(ass_path)
+                # Use subtitles filter with the ASS file. It will handle style and resolution perfectly.
+                filter_parts.append(f"[vcat]subtitles='{ass_escaped}'[vout]")
             else:
                 filter_parts.append("[vcat]null[vout]")
 
@@ -311,8 +376,8 @@ class VideoRenderer:
                 progress_callback(100, "완료")
 
         finally:
-            if srt_path:
+            if ass_path:
                 try:
-                    os.remove(srt_path)
+                    os.remove(ass_path)
                 except Exception:
                     pass
