@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import contextlib
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -503,13 +504,13 @@ class VideoRenderer:
         # =====================================================================
         # OPTIMIZED Qt-based subtitle rendering
         # 
-        # Strategy: Create a single timeline video of all subtitles instead of
-        # multiple overlays. This is MUCH faster than chaining overlay filters.
+        # Strategy: Create a subtitle video using concat demuxer to avoid
+        # command line length limits on Windows (WinError 206).
         # 
-        # 1. Build timeline of subtitle segments (with transparent frames between)
-        # 2. Render each unique subtitle to PNG once
-        # 3. Use concat filter to build subtitle timeline
-        # 4. Single overlay of subtitle timeline onto video
+        # 1. Render each unique subtitle to PNG once
+        # 2. Create concat demuxer file listing all PNGs with durations
+        # 3. Build subtitle video from concat file
+        # 4. Single overlay of subtitle video onto main video
         # =====================================================================
         
         # Build subtitle timeline segments
@@ -521,6 +522,8 @@ class VideoRenderer:
         subtitle_timeline: list[SubtitleTimelineSegment] = []
         unique_subtitles: dict[str, str] = {}  # text -> png_path
         transparent_png_path: str | None = None
+        subtitle_video_path: str | None = None
+        concat_file_path: str | None = None
         
         if subtitles and settings and settings.get('subtitle_enabled', True):
             if progress_callback:
@@ -541,7 +544,27 @@ class VideoRenderer:
             os.close(fd)
             transparent_img.save(transparent_png_path, "PNG")
             
-            # Build timeline with gaps
+            # =====================================================================
+            # OPTIMIZATION: Parallel PNG rendering for unique subtitle texts
+            # Uses ThreadPoolExecutor to render multiple PNGs concurrently
+            # =====================================================================
+            unique_texts = list(set(sub.text for sub in valid_subs))
+            
+            if unique_texts:
+                # Parallel rendering of unique subtitles
+                def render_one(text: str) -> tuple[str, str]:
+                    png_path = self._render_subtitle_png(text, settings, self.width, self.height)
+                    return (text, png_path)
+                
+                # Use up to 4 workers (balance between speed and resource usage)
+                max_workers = min(4, len(unique_texts))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(render_one, text): text for text in unique_texts}
+                    for future in concurrent.futures.as_completed(futures):
+                        text, png_path = future.result()
+                        unique_subtitles[text] = png_path
+            
+            # Build timeline with gaps (using pre-rendered PNGs)
             current_time = 0.0
             for sub in valid_subs:
                 # Add transparent segment before subtitle if there's a gap
@@ -550,16 +573,10 @@ class VideoRenderer:
                     if gap_dur > 0.001:
                         subtitle_timeline.append(SubtitleTimelineSegment(transparent_png_path, gap_dur))
                 
-                # Render unique subtitle text to PNG
-                text = sub.text
-                if text not in unique_subtitles:
-                    png_path = self._render_subtitle_png(text, settings, self.width, self.height)
-                    unique_subtitles[text] = png_path
-                
-                # Add subtitle segment
+                # Add subtitle segment (PNG already rendered)
                 sub_dur = sub.end_time - max(sub.start_time, current_time)
                 if sub_dur > 0.001:
-                    subtitle_timeline.append(SubtitleTimelineSegment(unique_subtitles[text], sub_dur))
+                    subtitle_timeline.append(SubtitleTimelineSegment(unique_subtitles[sub.text], sub_dur))
                     current_time = sub.end_time
             
             # Add final transparent segment if needed
@@ -569,8 +586,51 @@ class VideoRenderer:
                     subtitle_timeline.append(SubtitleTimelineSegment(transparent_png_path, remaining))
 
         try:
+            # =====================================================================
+            # Pre-render subtitle timeline as a separate video to avoid long command
+            # This prevents WinError 206 (filename too long) on Windows
+            # =====================================================================
+            if subtitle_timeline:
+                if progress_callback:
+                    progress_callback(5, "자막 비디오 생성 중...")
+                
+                # Create concat demuxer file for subtitle timeline
+                fd, concat_file_path = tempfile.mkstemp(prefix="pbb_concat_", suffix=".txt")
+                os.close(fd)
+                
+                with open(concat_file_path, "w", encoding="utf-8") as cf:
+                    for segment in subtitle_timeline:
+                        # Escape path for concat demuxer (forward slashes, escape special chars)
+                        escaped_path = segment.png_path.replace("\\", "/").replace("'", "'\\''")
+                        cf.write(f"file '{escaped_path}'\n")
+                        cf.write(f"duration {segment.duration}\n")
+                
+                # Create subtitle video using concat demuxer
+                fd, subtitle_video_path = tempfile.mkstemp(prefix="pbb_subs_", suffix=".mov")
+                os.close(fd)
+                
+                sub_cmd = [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                    "-f", "concat", "-safe", "0", "-i", concat_file_path,
+                    "-c:v", "png",  # Use PNG codec for lossless transparency
+                    "-pix_fmt", "rgba",
+                    "-r", str(self.fps),
+                    subtitle_video_path
+                ]
+                
+                sub_result = subprocess.run(
+                    sub_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                
+                if sub_result.returncode != 0:
+                    raise RuntimeError(f"자막 비디오 생성 실패:\n{sub_result.stderr}")
+            
             if progress_callback:
-                progress_callback(5, "FFmpeg 렌더 준비 중...")
+                progress_callback(10, "FFmpeg 렌더 준비 중...")
 
             cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
 
@@ -589,12 +649,11 @@ class VideoRenderer:
             audio_input_index = len(visuals)
             cmd += ["-i", audio_path]
 
-            # Subtitle timeline inputs (if any)
-            subtitle_input_start_idx = audio_input_index + 1
-            if subtitle_timeline:
-                for segment in subtitle_timeline:
-                    dur = max(0.001, segment.duration)
-                    cmd += ["-loop", "1", "-t", f"{dur}", "-i", segment.png_path]
+            # Subtitle video input (single file instead of many PNGs)
+            subtitle_input_index = None
+            if subtitle_video_path and Path(subtitle_video_path).exists():
+                subtitle_input_index = audio_input_index + 1
+                cmd += ["-i", subtitle_video_path]
 
             # Build filter graph
             filter_parts: list[str] = []
@@ -610,19 +669,9 @@ class VideoRenderer:
             concat_inputs = "".join([f"[v{i}]" for i in range(len(visuals))])
             filter_parts.append(f"{concat_inputs}concat=n={len(visuals)}:v=1:a=0[vcat]")
 
-            # Build and overlay subtitle timeline (OPTIMIZED: single overlay)
-            if subtitle_timeline:
-                # Concat all subtitle segments into one timeline
-                sub_concat_inputs = "".join([
-                    f"[{subtitle_input_start_idx + i}:v]" 
-                    for i in range(len(subtitle_timeline))
-                ])
-                filter_parts.append(
-                    f"{sub_concat_inputs}concat=n={len(subtitle_timeline)}:v=1:a=0[subs]"
-                )
-                
-                # Single overlay: video + subtitle timeline
-                filter_parts.append("[vcat][subs]overlay=0:0:format=auto[vout]")
+            # Overlay subtitle video (single overlay, much simpler)
+            if subtitle_input_index is not None:
+                filter_parts.append(f"[vcat][{subtitle_input_index}:v]overlay=0:0:format=auto[vout]")
             else:
                 filter_parts.append("[vcat]null[vout]")
 
@@ -672,7 +721,7 @@ class VideoRenderer:
                 m = re.match(r"out_time_ms=(\d+)", line.strip())
                 if m and total_us > 0:
                     out_us = int(m.group(1))
-                    pct = int(min(99, (out_us / total_us) * 100))
+                    pct = int(min(99, 10 + (out_us / total_us) * 89))  # 10-99 range
                     if pct != last_pct:
                         last_pct = pct
                         if progress_callback:
@@ -690,7 +739,7 @@ class VideoRenderer:
                 progress_callback(100, "완료")
 
         finally:
-            # Clean up temporary PNG files
+            # Clean up temporary files
             for png_path in unique_subtitles.values():
                 try:
                     os.remove(png_path)
@@ -699,5 +748,15 @@ class VideoRenderer:
             if transparent_png_path:
                 try:
                     os.remove(transparent_png_path)
+                except Exception:
+                    pass
+            if concat_file_path:
+                try:
+                    os.remove(concat_file_path)
+                except Exception:
+                    pass
+            if subtitle_video_path:
+                try:
+                    os.remove(subtitle_video_path)
                 except Exception:
                     pass
