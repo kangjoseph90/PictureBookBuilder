@@ -194,6 +194,9 @@ class AudioMixer(QObject):
         """
         self._position = max(0.0, min(position_sec, self._duration))
         
+        # Reset timer to prevent drift accumulation
+        self._last_tick_time = None
+        
         # Stop all current players and resync
         self._stop_all_players()
         
@@ -224,8 +227,8 @@ class AudioMixer(QObject):
         
         current_time = time.perf_counter()
         
+        # Use timer-based tracking for smooth movement
         if self._last_tick_time is not None:
-            # Calculate elapsed time with playback rate
             elapsed = (current_time - self._last_tick_time) * self._playback_rate
             self._position += elapsed
             
@@ -320,6 +323,9 @@ class AudioMixer(QObject):
             clip: The clip to start
             current_position: Current timeline position in seconds
         """
+        # Debug logging for sync investigation
+        # Uncomment when debugging audio sync issues:
+        # print(f"[AudioMixer] Starting clip '{clip.clip_id}' | timeline_pos={current_position:.3f}s, clip_start={clip.timeline_start:.3f}s, diff={current_position - clip.timeline_start:.3f}s")
         # Get or create cached player for this speaker
         cached = self._get_or_create_cached_player(clip.speaker)
         if cached is None:
@@ -334,11 +340,13 @@ class AudioMixer(QObject):
         # Store reference to track this clip is active
         self._active_players[clip.clip_id] = (player, audio_output)
         
+        # Store reference for position sync (will update after seek)
+        corrected_pos = int(source_position_ms * seek_correction)
+        
         # Check if player is already loaded
         if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
             # Player already loaded, seek and play immediately
             player.setPlaybackRate(self._playback_rate)
-            corrected_pos = int(source_position_ms * seek_correction)
             player.setPosition(corrected_pos)
             if self._playing:
                 player.play()
