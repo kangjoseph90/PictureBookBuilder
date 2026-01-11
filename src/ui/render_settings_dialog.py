@@ -52,8 +52,6 @@ class RenderSettingsDialog(QDialog):
 
         self._setup_ui()
         self._setup_audio()
-        # DEFER update until shown to ensure layout geometry is correct
-        # self._update_preview() 
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -229,11 +227,6 @@ class RenderSettingsDialog(QDialog):
         # Initial load of timeline clips
         self.preview_widget.set_timeline_clips(self.clips)
 
-        # Only show subtitle, hide other controls if possible or keep them
-        # For simplicity, we reuse the widget but we should probably customize it or create a simplified version.
-        # But PreviewWidget is coupled with AudioMixer, etc.
-        # Let's use it as is for consistency, but we might want to disable some controls or audio if needed.
-
         preview_layout.addWidget(self.preview_widget)
 
         layout.addWidget(settings_panel)
@@ -296,6 +289,7 @@ class RenderSettingsDialog(QDialog):
                 color: {self.settings['font_color']};
                 padding: 4px 8px;
                 border-radius: 2px;
+                border: none;
             }}
         """
 
@@ -306,21 +300,21 @@ class RenderSettingsDialog(QDialog):
         else:
             style += "QLabel { background-color: transparent; }"
 
-        # Outline (Simulated with text-shadow or border)
-        # QLabel styling is limited. We might not be able to do perfect text outline.
-        # We can simulate outline with border if background is transparent? No, that's box border.
-        # Basic QLabel doesn't support text stroke/outline via stylesheet easily.
-        # For preview purposes, we might just show the box border if enabled?
+        # For preview purposes, we use QGraphicsDropShadowEffect to simulate outline
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        
+        effect = QGraphicsDropShadowEffect()
         if self.settings['outline_enabled'] and self.settings['outline_width'] > 0:
-             # This sets the border of the LABEL BOX, not the text.
-             # Text outline is hard in QLabel.
-             # We will just set the label border for now as a proxy or if background is enabled.
-             pass
+             c = QColor(self.settings['outline_color'])
+             effect.setColor(c)
+             effect.setOffset(1, 1)
+             effect.setBlurRadius(2)
+             self.preview_widget.subtitle_label.setGraphicsEffect(effect)
+        else:
+             self.preview_widget.subtitle_label.setGraphicsEffect(None)
 
         self.preview_widget.subtitle_label.setStyleSheet(style)
 
-        # Position logic
-        # We need to hack PreviewWidget to support custom positioning
         self._apply_preview_position()
 
         # Force subtitle to show if there is one at current position
@@ -331,23 +325,11 @@ class RenderSettingsDialog(QDialog):
         self.preview_widget._on_position_changed(current_pos)
 
     def _apply_preview_position(self):
-        # This requires modifying PreviewWidget to expose positioning logic
-        # OR we can manually move it here if we access the label directly.
-
         label = self.preview_widget.subtitle_label
         container = self.preview_widget.image_label
 
         if not label.isVisible():
             return
-
-        # We need to defer this or trigger it on resize/show
-        # For now, let's just use the default center-bottom logic in PreviewWidget
-        # but modify the margin via a temporary patch or subclassing.
-        # Since PreviewWidget._reposition_subtitle is called on resize/update,
-        # we can monkeypatch it or update a property if we added one.
-
-        # Let's add a `custom_layout_callback` or similar to PreviewWidget later.
-        # For now, we will override the method instance.
 
         pos_setting = self.settings['position']
         margin_v = self.settings['margin_v'] // 2 # Scale for preview
