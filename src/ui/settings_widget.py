@@ -149,13 +149,13 @@ class SettingsWidget(QWidget):
         self.spin_line_soft = QSpinBox()
         self.spin_line_soft.setRange(10, 30)
         self.spin_line_soft.valueChanged.connect(self._on_setting_changed)
-        form_layout.addRow("줄 목표(Soft):", self.spin_line_soft)
+        form_layout.addRow("줄 목표:", self.spin_line_soft)
         
         # Line Hard Cap
         self.spin_line_hard = QSpinBox()
         self.spin_line_hard.setRange(15, 40)
         self.spin_line_hard.valueChanged.connect(self._on_setting_changed)
-        form_layout.addRow("줄 한계(Hard):", self.spin_line_hard)
+        form_layout.addRow("줄 한계:", self.spin_line_hard)
         
         # Max Lines
         self.spin_max_lines = QSpinBox()
@@ -169,7 +169,7 @@ class SettingsWidget(QWidget):
         form_layout.addRow("", self.check_split_conj)
         
         # Auto params (language-specific defaults)
-        self.check_auto_params = QCheckBox("언어별 기본값 사용 (자동)")
+        self.check_auto_params = QCheckBox("언어별 기본값 사용")
         self.check_auto_params.setToolTip("체크 시: 한국어/영어 기본값 자동 적용\n해제 시: 위 설정값 사용")
         self.check_auto_params.stateChanged.connect(self._on_auto_params_changed)
         form_layout.addRow("", self.check_auto_params)

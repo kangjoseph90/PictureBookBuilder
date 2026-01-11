@@ -20,6 +20,21 @@ from config import (
     SUBTITLE_LINE_HARD_CAP,
     SUBTITLE_MAX_LINES,
     SUBTITLE_SPLIT_ON_CONJUNCTIONS,
+    VIDEO_WIDTH,
+    VIDEO_HEIGHT,
+    VIDEO_FPS,
+    RENDER_SUBTITLE_ENABLED,
+    RENDER_FONT_FAMILY,
+    RENDER_FONT_SIZE,
+    RENDER_FONT_COLOR,
+    RENDER_OUTLINE_ENABLED,
+    RENDER_OUTLINE_WIDTH,
+    RENDER_OUTLINE_COLOR,
+    RENDER_BG_ENABLED,
+    RENDER_BG_COLOR,
+    RENDER_BG_ALPHA,
+    RENDER_POSITION,
+    RENDER_MARGIN_V,
 )
 
 
@@ -46,6 +61,23 @@ class RuntimeConfig:
     subtitle_line_hard_cap: int = SUBTITLE_LINE_HARD_CAP
     subtitle_max_lines: int = SUBTITLE_MAX_LINES
     subtitle_split_on_conjunctions: bool = SUBTITLE_SPLIT_ON_CONJUNCTIONS
+    
+    # Render Settings (Persisted per project)
+    render_width: int = VIDEO_WIDTH
+    render_height: int = VIDEO_HEIGHT
+    render_fps: int = VIDEO_FPS
+    render_subtitle_enabled: bool = RENDER_SUBTITLE_ENABLED
+    render_font_family: str = RENDER_FONT_FAMILY
+    render_font_size: int = RENDER_FONT_SIZE
+    render_font_color: str = RENDER_FONT_COLOR
+    render_outline_enabled: bool = RENDER_OUTLINE_ENABLED
+    render_outline_width: int = RENDER_OUTLINE_WIDTH
+    render_outline_color: str = RENDER_OUTLINE_COLOR
+    render_bg_enabled: bool = RENDER_BG_ENABLED
+    render_bg_color: str = RENDER_BG_COLOR
+    render_bg_alpha: int = RENDER_BG_ALPHA
+    render_position: str = RENDER_POSITION
+    render_margin_v: int = RENDER_MARGIN_V
     
     def get_subtitle_params(self, language: str = 'ko') -> dict:
         """Get subtitle parameters - auto (language-based) or manual.
@@ -90,6 +122,23 @@ class RuntimeConfig:
         self.subtitle_line_hard_cap = SUBTITLE_LINE_HARD_CAP
         self.subtitle_max_lines = SUBTITLE_MAX_LINES
         self.subtitle_split_on_conjunctions = SUBTITLE_SPLIT_ON_CONJUNCTIONS
+        
+        # Reset Render Settings
+        self.render_width = VIDEO_WIDTH
+        self.render_height = VIDEO_HEIGHT
+        self.render_fps = VIDEO_FPS
+        self.render_subtitle_enabled = RENDER_SUBTITLE_ENABLED
+        self.render_font_family = RENDER_FONT_FAMILY
+        self.render_font_size = RENDER_FONT_SIZE
+        self.render_font_color = RENDER_FONT_COLOR
+        self.render_outline_enabled = RENDER_OUTLINE_ENABLED
+        self.render_outline_width = RENDER_OUTLINE_WIDTH
+        self.render_outline_color = RENDER_OUTLINE_COLOR
+        self.render_bg_enabled = RENDER_BG_ENABLED
+        self.render_bg_color = RENDER_BG_COLOR
+        self.render_bg_alpha = RENDER_BG_ALPHA
+        self.render_position = RENDER_POSITION
+        self.render_margin_v = RENDER_MARGIN_V
 
 
 # Global singleton instance

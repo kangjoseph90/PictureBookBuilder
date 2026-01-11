@@ -11,6 +11,7 @@ from PyQt6.QtGui import QColor, QFont
 
 from .preview_widget import PreviewWidget
 from config import VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS
+from runtime_config import get_config
 
 class RenderSettingsDialog(QDialog):
     """
@@ -31,23 +32,24 @@ class RenderSettingsDialog(QDialog):
         # We need ScheduledClip for audio setup
         from .audio_mixer import ScheduledClip
 
-        # Default settings
+        # Load settings from persistent runtime config
+        config = get_config()
         self.settings = {
-            'width': VIDEO_WIDTH,
-            'height': VIDEO_HEIGHT,
-            'fps': VIDEO_FPS,
-            'subtitle_enabled': True,
-            'font_family': 'Malgun Gothic',
-            'font_size': 60,
-            'font_color': '#FFFFFF',
-            'outline_enabled': True,
-            'outline_width': 4,
-            'outline_color': '#000000',
-            'bg_enabled': False,
-            'bg_color': '#000000', # Will be semi-transparent
-            'bg_alpha': 160,
-            'position': 'Bottom', # Bottom, Top, Center
-            'margin_v': 100
+            'width': config.render_width,
+            'height': config.render_height,
+            'fps': config.render_fps,
+            'subtitle_enabled': config.render_subtitle_enabled,
+            'font_family': config.render_font_family,
+            'font_size': config.render_font_size,
+            'font_color': config.render_font_color,
+            'outline_enabled': config.render_outline_enabled,
+            'outline_width': config.render_outline_width,
+            'outline_color': config.render_outline_color,
+            'bg_enabled': config.render_bg_enabled,
+            'bg_color': config.render_bg_color,
+            'bg_alpha': config.render_bg_alpha,
+            'position': config.render_position,
+            'margin_v': config.render_margin_v
         }
 
         self._setup_ui()
@@ -286,6 +288,27 @@ class RenderSettingsDialog(QDialog):
             self._set_btn_color(btn, color.name())
             self._on_setting_changed()
 
+    def accept(self):
+        """Save settings to RuntimeConfig and accept dialog"""
+        config = get_config()
+        config.render_width = self.settings['width']
+        config.render_height = self.settings['height']
+        config.render_fps = self.settings['fps']
+        config.render_subtitle_enabled = self.settings['subtitle_enabled']
+        config.render_font_family = self.settings['font_family']
+        config.render_font_size = self.settings['font_size']
+        config.render_font_color = self.settings['font_color']
+        config.render_outline_enabled = self.settings['outline_enabled']
+        config.render_outline_width = self.settings['outline_width']
+        config.render_outline_color = self.settings['outline_color']
+        config.render_bg_enabled = self.settings['bg_enabled']
+        config.render_bg_color = self.settings['bg_color']
+        config.render_bg_alpha = self.settings['bg_alpha']
+        config.render_position = self.settings['position']
+        config.render_margin_v = self.settings['margin_v']
+        
+        super().accept()
+
     def _on_outline_toggled(self, checked):
         if checked and self.chk_bg.isChecked():
              self.chk_bg.setChecked(False)
@@ -431,23 +454,27 @@ class RenderSettingsDialog(QDialog):
         custom_reposition()
 
     def _reset_to_defaults(self):
-        # Reset settings dict
+        # Reset runtime config to defaults
+        config = get_config()
+        config.reset_to_defaults()
+        
+        # Reload settings dict from config
         self.settings.update({
-            'width': VIDEO_WIDTH,
-            'height': VIDEO_HEIGHT,
-            'fps': VIDEO_FPS,
-            'subtitle_enabled': True,
-            'font_family': 'Malgun Gothic',
-            'font_size': 60,
-            'font_color': '#FFFFFF',
-            'outline_enabled': True,
-            'outline_width': 4,
-            'outline_color': '#000000',
-            'bg_enabled': False,
-            'bg_color': '#000000',
-            'bg_alpha': 160,
-            'position': 'Bottom',
-            'margin_v': 100
+            'width': config.render_width,
+            'height': config.render_height,
+            'fps': config.render_fps,
+            'subtitle_enabled': config.render_subtitle_enabled,
+            'font_family': config.render_font_family,
+            'font_size': config.render_font_size,
+            'font_color': config.render_font_color,
+            'outline_enabled': config.render_outline_enabled,
+            'outline_width': config.render_outline_width,
+            'outline_color': config.render_outline_color,
+            'bg_enabled': config.render_bg_enabled,
+            'bg_color': config.render_bg_color,
+            'bg_alpha': config.render_bg_alpha,
+            'position': config.render_position,
+            'margin_v': config.render_margin_v
         })
 
         # Update UI components
