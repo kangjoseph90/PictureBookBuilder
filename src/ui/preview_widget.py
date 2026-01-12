@@ -14,7 +14,24 @@ from PyQt6.QtWidgets import (
     QSlider, QStyle, QComboBox, QStyleOption
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics, QMouseEvent
+
+
+class ClickableSlider(QSlider):
+    """QSlider that allows clicking anywhere to jump to that position"""
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Calculate the value based on click position
+            if self.orientation() == Qt.Orientation.Horizontal:
+                value = self.minimum() + (self.maximum() - self.minimum()) * event.position().x() / self.width()
+            else:
+                value = self.minimum() + (self.maximum() - self.minimum()) * (self.height() - event.position().y()) / self.height()
+            
+            self.setValue(int(value))
+            self.sliderMoved.emit(int(value))
+            event.accept()
+        super().mousePressEvent(event)
 
 from .image_cache import get_image_cache
 
@@ -246,8 +263,8 @@ class PreviewWidget(QWidget):
         time_layout.addWidget(self.time_label)
         layout.addLayout(time_layout)
         
-        # Seek slider
-        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        # Seek slider (clickable - allows clicking anywhere to jump)
+        self.seek_slider = ClickableSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.seek_slider.sliderMoved.connect(self._on_seek)
