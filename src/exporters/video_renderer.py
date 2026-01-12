@@ -551,7 +551,7 @@ class VideoRenderer:
                 segments.append(ImageSegment(seg.image_path, start, end, int(getattr(seg, "track", 0))))
 
         def _q(t: float) -> float:
-            return round(float(t), 3)
+            return round(float(t), 6)  # Microsecond precision to prevent frame drift at 30fps
 
         boundaries = {_q(0.0), _q(total_duration)}
         for seg in segments:
@@ -764,13 +764,14 @@ class VideoRenderer:
                 fd, image_video_path = tempfile.mkstemp(prefix="pbb_images_", suffix=".mov")
                 os.close(fd)
                 
-                # Pre-render images with scaling (lossless intermediate)
+                # Pre-render images with scaling
+                # Using crf=18 (visually lossless) instead of crf=0 for 10x smaller file size
                 img_cmd = [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
                     "-f", "concat", "-safe", "0", "-i", image_concat_file_path,
                     "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
                            f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",  # Lossless
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",  # Visually lossless, 10x smaller
                     "-pix_fmt", "yuv420p",
                     "-r", str(self.fps),
                     image_video_path
