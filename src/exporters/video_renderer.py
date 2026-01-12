@@ -60,8 +60,13 @@ class VideoRenderer:
         self.height = height
         self.fps = fps
         
-        # Detect best encoder on init
-        self._encoder_name, self._encoder_opts = self._detect_best_encoder()
+        # Detect best encoder on init (cache for later use)
+        self._gpu_encoder_name, self._gpu_encoder_opts = self._detect_best_encoder(use_hw_accel=True)
+        self._cpu_encoder_name, self._cpu_encoder_opts = ("libx264", ["-preset", "medium", "-threads", "0"])
+        
+        # Default to GPU if available
+        self._encoder_name = self._gpu_encoder_name
+        self._encoder_opts = self._gpu_encoder_opts
 
     def _test_encoder_works(self, encoder_name: str, encoder_opts: list[str]) -> bool:
         """Actually test if an encoder works by encoding a tiny test frame.
@@ -93,28 +98,30 @@ class VideoRenderer:
         except Exception:
             return False
 
-    def _detect_best_encoder(self) -> tuple[str, list[str]]:
+    def _detect_best_encoder(self, use_hw_accel: bool = True) -> tuple[str, list[str]]:
         """Detect best available H.264 encoder (GPU > CPU)
         
         Actually tests each encoder to ensure it works, not just listed.
         
+        Args:
+            use_hw_accel: If False, skip GPU encoders and use CPU only.
+        
         Returns:
             Tuple of (encoder_name, encoder_options_list)
         """
-        # GPU encoders in priority order
-        gpu_encoders = [
-            ("h264_nvenc", ["-preset", "p4", "-tune", "hq", "-rc", "vbr"]),  # NVIDIA
-            ("h264_qsv", ["-preset", "medium"]),  # Intel QuickSync
-            ("h264_amf", ["-quality", "balanced"]),  # AMD
-        ]
-        
-        for encoder, opts in gpu_encoders:
-            if self._test_encoder_works(encoder, opts):
-                print(f"[VideoRenderer] Using GPU encoder: {encoder}")
-                return (encoder, opts)
+        if use_hw_accel:
+            # GPU encoders in priority order
+            gpu_encoders = [
+                ("h264_nvenc", ["-preset", "p4", "-tune", "hq", "-rc", "vbr"]),  # NVIDIA
+                ("h264_qsv", ["-preset", "medium"]),  # Intel QuickSync
+                ("h264_amf", ["-quality", "balanced"]),  # AMD
+            ]
+            
+            for encoder, opts in gpu_encoders:
+                if self._test_encoder_works(encoder, opts):
+                    return (encoder, opts)
         
         # Fallback: CPU with multi-threading
-        print("[VideoRenderer] Using CPU encoder: libx264 (multi-threaded)")
         return ("libx264", ["-preset", "medium", "-threads", "0"])
 
     def _get_audio_duration_seconds(self, audio_path: str | Path) -> float:
@@ -507,6 +514,17 @@ class VideoRenderer:
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Select encoder based on hardware acceleration setting
+        use_hw_accel = settings.get('use_hw_accel', True) if settings else True
+        if use_hw_accel:
+            self._encoder_name = self._gpu_encoder_name
+            self._encoder_opts = self._gpu_encoder_opts
+            print(f"[VideoRenderer] Hardware acceleration enabled, using: {self._encoder_name}")
+        else:
+            self._encoder_name = self._cpu_encoder_name
+            self._encoder_opts = self._cpu_encoder_opts
+            print(f"[VideoRenderer] Hardware acceleration disabled, using: {self._encoder_name}")
 
         audio_path = str(audio_path)
         if not audio_path or not Path(audio_path).exists():

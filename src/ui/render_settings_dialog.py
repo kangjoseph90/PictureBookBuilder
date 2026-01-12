@@ -51,7 +51,8 @@ class RenderSettingsDialog(QDialog):
             'bg_color': config.render_bg_color,
             'bg_alpha': config.render_bg_alpha,
             'position': config.render_position,
-            'margin_v': config.render_margin_v
+            'margin_v': config.render_margin_v,
+            'use_hw_accel': config.render_use_hw_accel
         }
 
         self._setup_ui()
@@ -108,6 +109,13 @@ class RenderSettingsDialog(QDialog):
         self.spin_fps.setValue(self.settings['fps'])
         self.spin_fps.valueChanged.connect(self._on_setting_changed)
         video_form.addRow("프레임 레이트:", self.spin_fps)
+
+        # Hardware Acceleration
+        self.chk_hw_accel = QCheckBox("GPU 가속 사용")
+        self.chk_hw_accel.setChecked(self.settings['use_hw_accel'])
+        self.chk_hw_accel.setToolTip("NVIDIA/Intel/AMD GPU 하드웨어 인코더를 사용합니다. 지원되지 않으면 자동으로 CPU 인코딩으로 전환됩니다.")
+        self.chk_hw_accel.toggled.connect(self._on_setting_changed)
+        video_form.addRow("", self.chk_hw_accel)
 
         video_group.setLayout(video_form)
         settings_layout.addWidget(video_group)
@@ -317,6 +325,7 @@ class RenderSettingsDialog(QDialog):
         config.render_bg_alpha = self.settings['bg_alpha']
         config.render_position = self.settings['position']
         config.render_margin_v = self.settings['margin_v']
+        config.render_use_hw_accel = self.settings['use_hw_accel']
         
         super().accept()
 
@@ -351,6 +360,7 @@ class RenderSettingsDialog(QDialog):
         self.settings['bg_alpha'] = self.spin_bg_alpha.value()
         self.settings['position'] = self.combo_position.currentText()
         self.settings['margin_v'] = self.spin_margin_v.value()
+        self.settings['use_hw_accel'] = self.chk_hw_accel.isChecked()
 
         self._update_preview()
 
@@ -522,7 +532,8 @@ class RenderSettingsDialog(QDialog):
             'bg_color': config.render_bg_color,
             'bg_alpha': config.render_bg_alpha,
             'position': config.render_position,
-            'margin_v': config.render_margin_v
+            'margin_v': config.render_margin_v,
+            'use_hw_accel': config.render_use_hw_accel
         })
 
         # Update UI components
@@ -543,6 +554,7 @@ class RenderSettingsDialog(QDialog):
         self._set_btn_color(self.btn_font_color, self.settings['font_color'])
         self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
         self._set_btn_color(self.btn_bg_color, self.settings['bg_color'])
+        self.chk_hw_accel.setChecked(self.settings['use_hw_accel'])
 
         self._on_setting_changed()
 

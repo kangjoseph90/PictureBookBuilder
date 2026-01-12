@@ -36,6 +36,7 @@ from config import (
     RENDER_BG_ALPHA,
     RENDER_POSITION,
     RENDER_MARGIN_V,
+    RENDER_USE_HW_ACCEL,
 )
 
 
@@ -80,6 +81,7 @@ class RuntimeConfig:
     render_bg_alpha: int = RENDER_BG_ALPHA
     render_position: str = RENDER_POSITION
     render_margin_v: int = RENDER_MARGIN_V
+    render_use_hw_accel: bool = RENDER_USE_HW_ACCEL
     
     def get_subtitle_params(self, language: str = 'ko') -> dict:
         """Get subtitle parameters - auto (language-based) or manual.
@@ -142,6 +144,7 @@ class RuntimeConfig:
         self.render_bg_alpha = RENDER_BG_ALPHA
         self.render_position = RENDER_POSITION
         self.render_margin_v = RENDER_MARGIN_V
+        self.render_use_hw_accel = RENDER_USE_HW_ACCEL
 
 
 # Global singleton instance
