@@ -10,10 +10,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, 
     QLabel, QMenu
 )
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QTimer, QMimeData, QUrl
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QFont, 
-    QMouseEvent, QWheelEvent, QPaintEvent, QPainterPath, QCursor, QPixmap
+    QMouseEvent, QWheelEvent, QPaintEvent, QPainterPath, QCursor, QPixmap,
+    QDragEnterEvent, QDragMoveEvent, QDropEvent
 )
 
 from .clip import TimelineClip
@@ -29,6 +30,7 @@ class TimelineCanvas(QWidget):
     clip_double_clicked = pyqtSignal(str)  # Emits clip id
     clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
+    image_dropped = pyqtSignal(str, float)  # Emits image path and timeline position
     
     # NEW: Signal to notify command generation
     # action_type: 'move', 'resize', etc.
@@ -43,6 +45,7 @@ class TimelineCanvas(QWidget):
         self.setMinimumHeight(150)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAcceptDrops(True)  # Enable drop events for drag-and-drop
         
         # Timeline state
         self.clips: list[TimelineClip] = []
@@ -1122,6 +1125,66 @@ class TimelineCanvas(QWidget):
             event.ignore()  # Let main window handle playback toggle
         else:
             super().keyPressEvent(event)
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter - accept if dragging images"""
+        if event.mimeData().hasUrls():
+            # Check if any URL is an image
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile().lower()
+                    if path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                        event.acceptProposedAction()
+                        return
+        # Also accept text with file paths (from QListWidget)
+        if event.mimeData().hasText():
+            text = event.mimeData().text()
+            if text.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+    
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        """Handle drag move - show drop indicator on image track"""
+        y = event.position().y()
+        # Track 2 is the image track
+        image_track_y = self.get_track_y(2)
+        
+        # Accept if within image track area
+        if image_track_y <= y <= image_track_y + self.track_height:
+            event.acceptProposedAction()
+        else:
+            # Still accept but could show different feedback
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event: QDropEvent):
+        """Handle drop - create image clip at drop position"""
+        x = event.position().x()
+        drop_time = max(0, self.x_to_time(x))
+        
+        image_path = None
+        
+        # Try to get from URLs first
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+                    if path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                        image_path = path
+                        break
+        
+        # Fallback to text
+        if not image_path and event.mimeData().hasText():
+            text = event.mimeData().text()
+            if text.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                image_path = text
+        
+        if image_path:
+            event.acceptProposedAction()
+            self.image_dropped.emit(image_path, drop_time)
+        else:
+            event.ignore()
+
 
 
 class TimelineWidget(QWidget):

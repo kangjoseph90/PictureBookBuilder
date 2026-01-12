@@ -85,6 +85,31 @@ class ImageGridDelegate(QStyledItemDelegate):
         return QSize(100, 100)
 
 
+class DraggableImageListWidget(QListWidget):
+    """Custom QListWidget that provides file URLs when dragging for external drop targets"""
+    
+    def mimeData(self, items):
+        """Override to include file URLs in the mime data for drag operations"""
+        mime = super().mimeData(items)
+        
+        # Add file URLs for the dragged items
+        urls = []
+        for item in items:
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                from PyQt6.QtCore import QUrl
+                urls.append(QUrl.fromLocalFile(path))
+        
+        if urls:
+            mime.setUrls(urls)
+        
+        return mime
+    
+    def supportedDropActions(self):
+        """Support copy action for external drops while maintaining internal move"""
+        return Qt.DropAction.MoveAction | Qt.DropAction.CopyAction
+
+
 class ProgressDialog(QDialog):
     """Processing progress dialog with refined UI matching settings style"""
     
@@ -756,7 +781,7 @@ class MainWindow(QMainWindow):
         image_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency
         
         # Image list with thumbnails and drag-drop reordering
-        self.image_list = QListWidget()
+        self.image_list = DraggableImageListWidget()
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.image_list.setIconSize(QSize(64, 64))  # Larger thumbnails
         self.image_list.setGridSize(QSize(100, 100))  # Match delegate sizeHint for consistent spacing
@@ -766,7 +791,7 @@ class MainWindow(QMainWindow):
         self.image_list.setWrapping(True)
         self.image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Multi-select with Ctrl/Shift
-        self.image_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)  # Enable reordering
+        self.image_list.setDragDropMode(QListWidget.DragDropMode.DragDrop)  # Enable drag to external widgets
         self.image_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.image_list.setDragEnabled(True)
         self.image_list.setAcceptDrops(True)
@@ -841,6 +866,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.clip_double_clicked.connect(self._on_clip_double_clicked)
         self.timeline_widget.canvas.clip_context_menu.connect(self._on_clip_context_menu)
         self.timeline_widget.canvas.history_command_generated.connect(self._on_history_command)
+        self.timeline_widget.canvas.image_dropped.connect(self._on_image_dropped)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -1114,6 +1140,15 @@ class MainWindow(QMainWindow):
                 icon = QIcon(pixmap)
                 item.setIcon(icon)
                 item.setText(Path(path).name)
+        
+        # Also update timeline if this image is used there
+        for clip in self.timeline_widget.canvas.clips:
+            if clip.clip_type == "image" and clip.image_path == path:
+                # Clear pixmap cache to force refresh
+                self.timeline_widget.canvas.pixmap_cache.pop(path, None)
+                self.timeline_widget.canvas._background_dirty = True
+                self.timeline_widget.canvas.update()
+                break
     
     def _apply_images_to_timeline(self):
         """Apply images from list to timeline, mapping 1:1 with audio clips"""
@@ -2618,6 +2653,58 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage(f"이미지가 삽입되었습니다: {new_clip.name}")
+    
+    def _on_image_dropped(self, image_path: str, drop_time: float):
+        """Handle image dropped onto timeline via drag and drop"""
+        from pathlib import Path
+        
+        # Fixed duration for dropped images (3 seconds)
+        duration = 3.0
+        
+        # Generate unique ID
+        base_id = f"img_dropped_{len([c for c in self.timeline_widget.canvas.clips if c.clip_type == 'image'])}"
+        new_id = self._make_unique_clip_id(base_id)
+        
+        # Create new image clip
+        new_clip = TimelineClip(
+            id=new_id,
+            name=Path(image_path).name,
+            start=drop_time,
+            duration=duration,
+            track=2,
+            color=QColor("#9E9E9E"),
+            clip_type="image",
+            waveform=[],
+            image_path=image_path
+        )
+        
+        # Undo command
+        from .undo_system import AddRemoveClipsCommand
+        cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[new_clip],
+            removed=[],
+            description=f"드래그로 이미지 추가: {new_clip.name}",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+        
+        self.timeline_widget.canvas._update_total_duration()
+        self.timeline_widget.canvas._background_dirty = True
+        self.timeline_widget.canvas.update()
+        
+        # Load image into cache for thumbnail display
+        from .image_cache import get_image_cache
+        cache = get_image_cache()
+        if not cache.is_loaded(image_path):
+            cache.load_images([image_path])
+        
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage(f"이미지가 추가되었습니다: {new_clip.name}")
+
     
     def _delete_clip(self, clip):
         """Delete a clip from the timeline"""
