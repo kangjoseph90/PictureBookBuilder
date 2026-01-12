@@ -553,10 +553,19 @@ class VideoRenderer:
         def _q(t: float) -> float:
             return round(float(t), 6)  # Microsecond precision to prevent frame drift at 30fps
 
-        boundaries = {_q(0.0), _q(total_duration)}
+        # CRITICAL FIX: Quantize segment times to match boundary precision
+        # This prevents floating-point comparison issues at segment boundaries
+        # where s.start_time might be 824.3770000001 but boundary is 824.377000
+        quantized_segments: list[tuple[str, float, float, int]] = []
         for seg in segments:
-            boundaries.add(_q(seg.start_time))
-            boundaries.add(_q(seg.end_time))
+            q_start = _q(seg.start_time)
+            q_end = _q(seg.end_time)
+            quantized_segments.append((seg.image_path, q_start, q_end, seg.track))
+
+        boundaries = {_q(0.0), _q(total_duration)}
+        for img_path, q_start, q_end, track in quantized_segments:
+            boundaries.add(q_start)
+            boundaries.add(q_end)
         times = sorted(boundaries)
         if len(times) < 2:
             times = [0.0, total_duration]
@@ -565,10 +574,14 @@ class VideoRenderer:
         for t0, t1 in zip(times, times[1:]):
             if t1 <= t0:
                 continue
-            active = [s for s in segments if s.start_time <= t0 < s.end_time]
+            # Use quantized segment times for comparison (now exact match possible)
+            active = [(img_path, q_start, q_end, track) 
+                      for img_path, q_start, q_end, track in quantized_segments 
+                      if q_start <= t0 < q_end]
             if active:
-                chosen = max(active, key=lambda s: (s.track, s.start_time))
-                img_path: str | None = chosen.image_path
+                # Select by track (highest first), then by start time (latest first)
+                chosen = max(active, key=lambda s: (s[3], s[1]))
+                img_path: str | None = chosen[0]
             else:
                 img_path = None
             dur = float(t1 - t0)
