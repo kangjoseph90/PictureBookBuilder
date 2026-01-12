@@ -494,9 +494,13 @@ class VideoRenderer:
         output_path: str | Path = "output.mp4",
         progress_callback=None,
         settings: dict = None,
+        cancel_check=None,
     ) -> None:
         """
         Render video with Qt-based subtitle rendering for pixel-perfect preview matching.
+        
+        Args:
+            cancel_check: Optional callable that returns True if rendering should be cancelled.
         
         Subtitles are rendered as PNG overlays using the same Qt QPainter logic
         as the preview widget, ensuring 100% identical appearance.
@@ -583,6 +587,10 @@ class VideoRenderer:
         concat_file_path: str | None = None
         
         if subtitles and settings and settings.get('subtitle_enabled', True):
+            # Check for cancellation at start
+            if cancel_check and cancel_check():
+                return
+            
             if progress_callback:
                 progress_callback(2, "자막 이미지 생성 중...")
             
@@ -648,6 +656,10 @@ class VideoRenderer:
             # This prevents WinError 206 (filename too long) on Windows
             # =====================================================================
             if subtitle_timeline:
+                # Check for cancellation before subtitle video
+                if cancel_check and cancel_check():
+                    return
+                
                 if progress_callback:
                     progress_callback(5, "자막 비디오 생성 중...")
                 
@@ -685,6 +697,10 @@ class VideoRenderer:
                 
                 if sub_result.returncode != 0:
                     raise RuntimeError(f"자막 비디오 생성 실패:\n{sub_result.stderr}")
+            
+            # Check for cancellation before image video
+            if cancel_check and cancel_check():
+                return
             
             if progress_callback:
                 progress_callback(10, "이미지 비디오 생성 중...")
@@ -755,6 +771,11 @@ class VideoRenderer:
                         os.remove(black_frame_path)
                     except Exception:
                         pass
+            
+            
+            # Check for cancellation before final render
+            if cancel_check and cancel_check():
+                return
             
             if progress_callback:
                 progress_callback(15, "최종 렌더링 준비 중...")
@@ -855,22 +876,27 @@ class VideoRenderer:
             
             combined_output: list[str] = []
             stall_timeout = 60  # seconds - no output for this long = stall
+            cancelled = False
             
             while True:
-                try:
-                    line = output_queue.get(timeout=stall_timeout)
-                except queue.Empty:
-                    # No output for 60 seconds - likely stalled
+                # Check for cancellation request
+                if cancel_check and cancel_check():
+                    cancelled = True
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         proc.kill()
                         proc.wait()
-                    raise RuntimeError(
-                        f"FFmpeg가 {stall_timeout}초 동안 응답하지 않아 렌더링을 중단했습니다. "
-                        "출력 파일이 손상되었거나 FFmpeg가 멈춘 것으로 보입니다."
-                    )
+                    break
+                
+                try:
+                    line = output_queue.get(timeout=1)  # Short timeout to check cancellation frequently
+                except queue.Empty:
+                    # Check if process is still running
+                    if proc.poll() is not None:
+                        break  # Process ended
+                    continue  # Keep waiting
                 
                 if line is None:
                     # End of output
@@ -889,6 +915,10 @@ class VideoRenderer:
 
                 if line.strip() == "progress=end":
                     break
+            
+            # If cancelled, don't check return code or emit completion
+            if cancelled:
+                return
             
             # Check if reader thread encountered an error
             if reader_exception:

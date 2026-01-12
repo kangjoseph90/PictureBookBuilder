@@ -197,6 +197,11 @@ class RenderThread(QThread):
         self.subtitle_clips = subtitle_clips
         self.output_path = output_path
         self.render_settings = render_settings
+        self._cancelled = False
+    
+    def cancel(self):
+        """Request cancellation of rendering"""
+        self._cancelled = True
     
     def run(self):
         try:
@@ -234,21 +239,28 @@ class RenderThread(QThread):
             renderer = VideoRenderer(width=width, height=height, fps=fps)
             self.progress.emit(10, "비디오 렌더링 중...")
             
-            # Render with progress callback
+            # Render with progress callback and cancel check
             renderer.render(
                 images=images,
                 audio_path=str(self.audio_path),
                 subtitles=subtitles,
                 output_path=str(self.output_path),
                 progress_callback=self._on_render_progress,
-                settings=self.render_settings
+                settings=self.render_settings,
+                cancel_check=lambda: self._cancelled
             )
             
-            self.progress.emit(100, "완료")
-            self.finished.emit(True, f"영상이 저장되었습니다:\n{self.output_path}")
+            if self._cancelled:
+                self.finished.emit(False, "사용자가 렌더링을 취소했습니다.")
+            else:
+                self.progress.emit(100, "완료")
+                self.finished.emit(True, f"영상이 저장되었습니다:\n{self.output_path}")
             
         except Exception as e:
-            self.finished.emit(False, f"렌더링 실패: {str(e)}")
+            if self._cancelled:
+                self.finished.emit(False, "사용자가 렌더링을 취소했습니다.")
+            else:
+                self.finished.emit(False, f"렌더링 실패: {str(e)}")
     
     def _on_render_progress(self, progress: int, message: str):
         """Callback from renderer for progress updates"""
@@ -3019,6 +3031,13 @@ class MainWindow(QMainWindow):
         )
         self.render_thread.progress.connect(self._on_render_progress)
         self.render_thread.finished.connect(self._on_render_finished)
+        
+        # Create and show progress dialog for rendering
+        self.render_progress_dialog = ProgressDialog(self, "동영상 렌더링")
+        self.render_progress_dialog.cancelled.connect(self.render_thread.cancel)
+        self.render_thread.progress.connect(self.render_progress_dialog.update_progress)
+        self.render_progress_dialog.show()
+        
         self.render_thread.start()
     
     def _create_merged_audio(self, output_path: str):
@@ -3089,13 +3108,20 @@ class MainWindow(QMainWindow):
     
     def _on_render_finished(self, success: bool, message: str):
         """Handle render thread completion"""
+        # Close progress dialog
+        if hasattr(self, 'render_progress_dialog') and self.render_progress_dialog:
+            self.render_progress_dialog._is_cancelled = True  # Allow closing
+            self.render_progress_dialog.close()
+            self.render_progress_dialog = None
+        
         self.action_render.setEnabled(True)
         if success:
             self.statusBar().showMessage("렌더링 완료")
             QMessageBox.information(self, "완료", message)
         else:
-            self.statusBar().showMessage("렌더링 실패")
-            QMessageBox.critical(self, "오류", message)
+            self.statusBar().showMessage("렌더링 실패" if "취소" not in message else "렌더링 취소됨")
+            if "취소" not in message:
+                QMessageBox.critical(self, "오류", message)
             
         # Cleanup temp audio
         if hasattr(self, '_temp_render_audio') and self._temp_render_audio:
