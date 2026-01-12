@@ -413,34 +413,22 @@ class TimelineCanvas(QWidget):
         visible_end = self.x_to_time(self.width())
         
         # Draw clips (only visible ones)
-        # 1. Draw non-selected clips first
+        # Draw all clips in their natural layering (order in clips list)
         for clip in self.clips:
-            if clip.id == self.selected_clip:
-                continue
-
             # Cull clips outside visible range
             if clip.start + clip.duration < visible_start:
-                continue  # Clip is completely to the left
+                continue
             if clip.start > visible_end:
-                continue  # Clip is completely to the right
+                continue
             
             self._draw_clip(painter, clip)
-
-        # 2. Draw selected clip last (on top)
-        if self.selected_clip:
-            for clip in self.clips:
-                if clip.id == self.selected_clip:
-                     # Cull clips outside visible range
-                    if clip.start + clip.duration < visible_start:
-                        continue
-                    if clip.start > visible_end:
-                        continue
-
-                    self._draw_clip(painter, clip)
-                    break
         
         # 3. Draw overlaps on top of clips
         self._draw_overlaps(painter)
+
+        # 4. Draw selection highlight on top of everything
+        if self.selected_clip:
+            self._draw_selection_highlight(painter)
 
         painter.end()
         self._background_dirty = False
@@ -645,31 +633,53 @@ class TimelineCanvas(QWidget):
             # Process END (-1) before START (1) to NOT count touching as overlap
             events.sort(key=lambda x: (x[0], x[1]))
             
-            active_count = 0
-            overlap_start = None
+            # Process END (-1) before START (1) to NOT count touching as overlap
+            events.sort(key=lambda x: (x[0], x[1]))
             
-            for i in range(len(events)):
-                time, type_ = events[i]
-                prev_count = active_count
-                active_count += type_
+            active_count = 0
+            last_time = None
+            
+            idx = 0
+            while idx < len(events):
+                time = events[idx][0]
                 
-                # Wait until we process all events at the same timestamp
-                if i + 1 < len(events) and events[i+1][0] == time:
-                    continue
+                # If we were in an overlap state, draw the segment from last event to current event
+                if active_count >= 2 and last_time is not None and time > last_time:
+                    x = self.time_to_x(last_time)
+                    # Subtract a tiny amount from width if we want a gap, 
+                    # but usually just drawing two rounded rects at the same boundary
+                    # will create the visual separation naturally.
+                    width = (time - last_time) * self.zoom
+                    y = self.get_track_y(track)
+                    height = self.track_height
+                    painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
                 
-                # Identify continuous overlap segments (where at least 2 clips coexist)
-                # Group adjacent segments into one block for clean rounded corners
-                if prev_count < 2 and active_count >= 2:
-                    overlap_start = time
-                elif prev_count >= 2 and active_count < 2:
-                    if overlap_start is not None and time > overlap_start:
-                        x = self.time_to_x(overlap_start)
-                        width = (time - overlap_start) * self.zoom
-                        y = self.get_track_y(track)
-                        height = self.track_height
-                        # Use rounded rect to match clip style (radius 3)
-                        painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
-                        overlap_start = None
+                # Process all events at this exact timestamp to get net change
+                while idx < len(events) and events[idx][0] == time:
+                    active_count += events[idx][1]
+                    idx += 1
+                
+                last_time = time
+
+    def _draw_selection_highlight(self, painter: QPainter):
+        """Draw a bold selection outline on top of everything"""
+        if not self.selected_clip:
+            return
+            
+        for clip in self.clips:
+            if clip.id == self.selected_clip:
+                x = self.time_to_x(clip.start)
+                y = self.get_track_y(clip.track)
+                width = clip.duration * self.zoom
+                height = self.track_height
+                
+                painter.save()
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                # Use a thick white pen for selection
+                painter.setPen(QPen(Qt.GlobalColor.white, 2))
+                painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
+                painter.restore()
+                break
 
     def _draw_thumbnail(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
