@@ -958,7 +958,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.update()
         self.timeline_widget.canvas._update_total_duration()
 
-        # Sync to preview
+        # Sync to preview and regenerate (set data first, then audio)
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self._regenerate_preview_from_clips() # Might be heavy but ensures audio sync
@@ -1129,7 +1129,7 @@ class MainWindow(QMainWindow):
             self._image_path_to_item[path_str] = item
             
             # Check if already cached - if so, apply thumbnail immediately
-            if cache.is_loaded(path_str):
+            if cache.has_thumbnail(path_str):
                 pixmap = cache.get_thumbnail_small(path_str)
                 if pixmap and not pixmap.isNull():
                     item.setIcon(QIcon(pixmap))
@@ -1161,8 +1161,6 @@ class MainWindow(QMainWindow):
         # Also update timeline if this image is used there
         for clip in self.timeline_widget.canvas.clips:
             if clip.clip_type == "image" and clip.image_path == path:
-                # Clear pixmap cache to force refresh
-                self.timeline_widget.canvas.pixmap_cache.pop(path, None)
                 self.timeline_widget.canvas._background_dirty = True
                 self.timeline_widget.canvas.update()
                 break
@@ -2587,8 +2585,6 @@ class MainWindow(QMainWindow):
             clip.name = Path(path).name
             new_state = copy.deepcopy(clip)
 
-            self.timeline_widget.canvas.pixmap_cache.pop(path, None)  # Clear cache
-
             # Undo command
             cmd = ModifyClipsCommand(
                 self.timeline_widget.canvas,
@@ -2602,11 +2598,11 @@ class MainWindow(QMainWindow):
             self.timeline_widget.canvas._background_dirty = True
             self.timeline_widget.canvas.update()
             
-            # Load new image into cache
+            # Load new image into cache (prefetch original for preview)
             from .image_cache import get_image_cache
             cache = get_image_cache()
             if not cache.is_loaded(path):
-                cache.load_images([path])
+                cache.prefetch_images([path])
             
             
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
@@ -2681,14 +2677,13 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
-        # Load image into cache for thumbnail display
+        # Load image into cache for thumbnail display and prefetch for preview
         from .image_cache import get_image_cache
         cache = get_image_cache()
         if not cache.is_loaded(image_path):
-            cache.load_images([image_path])
+            cache.prefetch_images([image_path])
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
-        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage(f"이미지가 삽입되었습니다: {new_clip.name}")
     
     def _on_image_dropped(self, image_path: str, drop_time: float):
@@ -2732,14 +2727,13 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
-        # Load image into cache for thumbnail display
+        # Load image into cache for thumbnail display and prefetch for preview
         from .image_cache import get_image_cache
         cache = get_image_cache()
         if not cache.is_loaded(image_path):
-            cache.load_images([image_path])
+            cache.prefetch_images([image_path])
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
-        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage(f"이미지가 추가되었습니다: {new_clip.name}")
 
     
@@ -3332,12 +3326,12 @@ class MainWindow(QMainWindow):
         self.timeline_widget.set_clips(clips)
         self.preview_widget.set_timeline_clips(clips)
         
-        # Pre-load all images used in timeline clips (including external images)
+        # Pre-load all images used in timeline clips (prefetch originals for preview)
         clip_image_paths = [c.image_path for c in clips if c.clip_type == "image" and c.image_path]
         if clip_image_paths:
             from .image_cache import get_image_cache
-            get_image_cache().load_images(clip_image_paths)
-            print(f"Pre-loading {len(clip_image_paths)} images from timeline clips")
+            get_image_cache().prefetch_images(clip_image_paths)
+            print(f"Pre-fetching {len(clip_image_paths)} images from timeline clips")
         
         # Restore speaker-audio mapping table
         self.speakers = list(self.speaker_audio_map.keys())

@@ -70,7 +70,7 @@ class ImageCache(QObject):
             return
 
         for path in paths:
-            if not path or not Path(path).exists():
+            if not path:
                 continue
             
             with self._lock:
@@ -141,7 +141,8 @@ class ImageCache(QObject):
     def _enforce_capacity(self):
         """Enforce LRU capacity on originals"""
         while len(self._originals) > self._capacity:
-            self._originals.popitem(last=False)  # Pop oldest (first) item
+            path, _ = self._originals.popitem(last=False)  # Pop oldest (first) item
+            print(f"[Cache] Evicted: {Path(path).name}")
 
     def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage):
         """Handle processed images on the main thread"""
@@ -159,6 +160,7 @@ class ImageCache(QObject):
                 if pix_original:
                     self._originals[path] = pix_original
                     self._originals.move_to_end(path)
+                    #print(f"[Cache] Registered Original: {Path(path).name} (Current: {len(self._originals)}/{self._capacity})")
                     self._enforce_capacity()
 
                 self._thumbnails_small[path] = pix_small
@@ -177,7 +179,9 @@ class ImageCache(QObject):
         with self._lock:
             if path in self._originals:
                 self._originals.move_to_end(path)
+                #print(f"[Cache] Hit Original: {Path(path).name}")
                 return self._originals[path]
+            #print(f"[Cache] Miss Original: {Path(path).name}")
             return None
     
     def get_thumbnail_small(self, path: str) -> Optional[QPixmap]:
@@ -190,10 +194,20 @@ class ImageCache(QObject):
         with self._lock:
             return self._thumbnails_timeline.get(path)
     
-    def is_loaded(self, path: str) -> bool:
-        """Check if an image is fully loaded"""
+    def has_original(self, path: str) -> bool:
+        """Check if the full original image is in cache"""
         with self._lock:
             return path in self._originals
+
+    def has_thumbnail(self, path: str) -> bool:
+        """Check if thumbnails are in cache"""
+        with self._lock:
+            return path in self._thumbnails_small
+
+    def is_loaded(self, path: str) -> bool:
+        """Check if an image (at least thumbnails) is in cache"""
+        with self._lock:
+            return path in self._thumbnails_small or path in self._originals
     
     def clear(self):
         """Clear all cached images"""

@@ -101,7 +101,6 @@ class TimelineCanvas(QWidget):
         self.grid_color = QColor("#333333")
         self.text_color = QColor("#CCCCCC")
         self.playhead_color = QColor("#FF4444")
-        self.pixmap_cache: dict[str, 'QPixmap'] = {}  # Cache for thumbnails
         
         # Audio cache for real-time waveform updates
         self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
@@ -687,27 +686,28 @@ class TimelineCanvas(QWidget):
         if not clip.image_path:
             return
         
-        # Check local cache first
-        pixmap = self.pixmap_cache.get(clip.image_path)
+        # Get from global cache (already optimized for timeline)
+        pixmap = self._image_cache.get_thumbnail_timeline(clip.image_path)
         
-        if pixmap is None:
-            # Try to get from global cache
-            thumbnail = self._image_cache.get_thumbnail_timeline(clip.image_path)
-            if thumbnail and not thumbnail.isNull():
-                # Scale to track height
-                pixmap = thumbnail.scaledToHeight(
-                    self.track_height - 4, 
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                self.pixmap_cache[clip.image_path] = pixmap
-        
-        if pixmap:
-            # Draw at the start of the clip
-            thumb_width = pixmap.width()
-            draw_width = min(thumb_width, int(width))
+        if pixmap and not pixmap.isNull():
+            # Draw at the start of the clip, scaled to fit track height
+            # We subtract padding to match original visual
+            target_h = height - 4
+            # Keep aspect ratio
+            target_w = pixmap.width() * (target_h / pixmap.height())
+            
+            draw_width = min(target_w, width - 4)
             
             if draw_width > 5:
-                painter.drawPixmap(int(x + 2), int(y + 2), pixmap, 0, 0, draw_width, pixmap.height())
+                # Use drawPixmap with target rectangle for automatic scaling
+                target_rect = QRectF(x + 2, y + 2, draw_width, target_h)
+                # Source rect: we only take what fits in draw_width
+                source_w = pixmap.width() * (draw_width / target_w)
+                source_rect = QRectF(0, 0, source_w, pixmap.height())
+                
+                painter.drawPixmap(target_rect, pixmap, source_rect)
+                # For debugging:
+                # print(f"[Timeline] Drove thumb: {Path(clip.image_path).name}")
 
     def _draw_waveform(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):

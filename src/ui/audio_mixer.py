@@ -85,8 +85,9 @@ class AudioMixer(QObject):
         Args:
             clips: List of ScheduledClip objects
         """
-        # Stop any current playback
-        self.stop()
+        # Stop any current playback but preserve position during update
+        # to avoid redundant 'jump to 0' signals.
+        self.stop(reset_position=False)
         
         self.clips = clips
         self._update_duration()
@@ -174,16 +175,17 @@ class AudioMixer(QObject):
             
         self.playback_state_changed.emit('paused')
         
-    def stop(self):
-        """Stop playback and reset position"""
+    def stop(self, reset_position: bool = True):
+        """Stop playback and optionally reset position"""
         self._playing = False
         self._timer.stop()
         
         # Stop and cleanup all active players
         self._stop_all_players()
         
-        self._position = 0.0
-        self.position_changed.emit(0)
+        if reset_position:
+            self._position = 0.0
+            self.position_changed.emit(0)
         self.playback_state_changed.emit('stopped')
         
     def seek(self, position_sec: float):

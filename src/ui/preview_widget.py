@@ -179,6 +179,7 @@ class PreviewWidget(QWidget):
         self.current_subtitle: Optional[str] = None
         self.showing_placeholder = True
         self.subtitles_enabled = True
+        self._last_prefetch_idx = -1  # Track last prefetched item index
         
         # Image cache for shared originals
         self._image_cache = get_image_cache()
@@ -404,6 +405,7 @@ class PreviewWidget(QWidget):
         """
         self.image_clips = []
         self.subtitle_clips = []
+        self._last_prefetch_idx = -1  # Reset prefetch state when clips change
         
         for clip in clips:
             if clip.clip_type == "image":
@@ -462,7 +464,7 @@ class PreviewWidget(QWidget):
         """Display an image from the shared cache"""
         self.current_image = image_path
         
-        if not image_path or not Path(image_path).exists():
+        if not image_path:
             return
         
         target_size = self.image_label.size()
@@ -504,7 +506,8 @@ class PreviewWidget(QWidget):
                     current_idx = i
                     break
 
-            if current_idx != -1:
+            if current_idx != -1 and current_idx != self._last_prefetch_idx:
+                self._last_prefetch_idx = current_idx
                 # Prefetch current and next few images
                 next_clips = self.image_clips[current_idx : current_idx + 4]
                 paths_to_prefetch = [c['path'] for c in next_clips]
