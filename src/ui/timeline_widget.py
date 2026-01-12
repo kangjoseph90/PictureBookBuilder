@@ -1214,4 +1214,5 @@ class TimelineWidget(QWidget):
         )
         self.canvas.clips.append(clip)
         self.canvas._update_total_duration()
+        self.canvas._background_dirty = True
         self.canvas.update()

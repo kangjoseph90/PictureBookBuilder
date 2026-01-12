@@ -2600,6 +2600,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_actions()
 
         self.timeline_widget.canvas._update_total_duration()
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
@@ -2625,6 +2626,7 @@ class MainWindow(QMainWindow):
             if clip.clip_type == "audio":
                 self.preview_widget.remove_audio_clip(clip.id)
             
+            self.timeline_widget.canvas._background_dirty = True
             self.timeline_widget.canvas.update()
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
             self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
