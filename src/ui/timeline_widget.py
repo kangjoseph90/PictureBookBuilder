@@ -29,6 +29,7 @@ class TimelineCanvas(QWidget):
     clip_edited = pyqtSignal(str)  # Emits clip id when source boundaries changed
     clip_double_clicked = pyqtSignal(str)  # Emits clip id
     clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
+    clip_delete_requested = pyqtSignal(str)  # Emits clip id when delete key pressed
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     image_dropped = pyqtSignal(str, float)  # Emits image path and timeline position
     
@@ -1123,6 +1124,10 @@ class TimelineCanvas(QWidget):
         """Handle key press events"""
         if event.key() == Qt.Key.Key_Space:
             event.ignore()  # Let main window handle playback toggle
+        elif event.key() == Qt.Key.Key_Delete:
+            # Delete selected clip
+            if self.selected_clip:
+                self.clip_delete_requested.emit(self.selected_clip)
         else:
             super().keyPressEvent(event)
     

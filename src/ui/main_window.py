@@ -873,6 +873,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.clip_context_menu.connect(self._on_clip_context_menu)
         self.timeline_widget.canvas.history_command_generated.connect(self._on_history_command)
         self.timeline_widget.canvas.image_dropped.connect(self._on_image_dropped)
+        self.timeline_widget.canvas.clip_delete_requested.connect(self._on_clip_delete_requested)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -2752,6 +2753,20 @@ class MainWindow(QMainWindow):
                 self.preview_widget.set_total_duration(total_duration)
             
             self.statusBar().showMessage(f"클립이 삭제되었습니다: {clip.name}")
+    
+    def _on_clip_delete_requested(self, clip_id: str):
+        """Handle delete key press on timeline - delete the selected clip"""
+        # Find the clip by ID
+        clip = None
+        for c in self.timeline_widget.canvas.clips:
+            if c.id == clip_id:
+                clip = c
+                break
+        
+        if clip:
+            self._delete_clip(clip)
+            # Clear selection after delete
+            self.timeline_widget.canvas.selected_clip = None
     
     def _regenerate_preview_from_clips(self):
         """Rebuild AudioMixer with all current clips"""
