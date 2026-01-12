@@ -516,9 +516,11 @@ class VideoRenderer:
         if audio_duration <= 0:
             raise RuntimeError("오디오 길이를 확인할 수 없습니다.")
         
-        # Use the maximum of audio duration and image clip end times
+        # Calculate total duration from ALL clips (images, subtitles, audio)
+        # This ensures preview and rendering use the same timeline duration
         max_image_end = max((float(seg.end_time) for seg in images), default=0.0) if images else 0.0
-        total_duration = max(audio_duration, max_image_end)
+        max_subtitle_end = max((float(sub.end_time) for sub in subtitles), default=0.0) if subtitles else 0.0
+        total_duration = max(audio_duration, max_image_end, max_subtitle_end)
 
         # Build contiguous visuals covering full audio duration.
         segments: list[ImageSegment] = []
@@ -724,11 +726,13 @@ class VideoRenderer:
                 black_frame_path = None
                 has_gaps = any(img_path is None for img_path, dur in visuals)
                 if has_gaps:
+                    # Use RGB32 (no alpha) and save as JPG to match typical input formats (YUV colorspace)
+                    # Mixing PNG (RGB) and JPG (YUV) in concat demuxer often causes "last frame freeze" issues
                     black_img = QImage(self.width, self.height, QImage.Format.Format_RGB32)
                     black_img.fill(QColor(0, 0, 0))
-                    fd, black_frame_path = tempfile.mkstemp(prefix="pbb_black_", suffix=".png")
+                    fd, black_frame_path = tempfile.mkstemp(prefix="pbb_black_", suffix=".jpg")
                     os.close(fd)
-                    black_img.save(black_frame_path, "PNG")
+                    black_img.save(black_frame_path, "JPG", quality=100)
                 
                 with open(image_concat_file_path, "w", encoding="utf-8") as cf:
                     for img_path, dur in visuals:
@@ -773,6 +777,51 @@ class VideoRenderer:
                         pass
             
             
+            # =====================================================================
+            # Pad audio with silence if it's shorter than total_duration
+            # This ensures the video doesn't end early when using multiple streams
+            # =====================================================================
+            padded_audio_path = None
+            final_audio_path = audio_path
+            
+            if audio_duration < total_duration:
+                # Check for cancellation before audio padding
+                if cancel_check and cancel_check():
+                    return
+                
+                if progress_callback:
+                    progress_callback(12, "오디오 패딩 중...")
+                
+                # Create temp file for padded audio
+                fd, padded_audio_path = tempfile.mkstemp(prefix="pbb_padded_", suffix=".wav")
+                os.close(fd)
+                
+                silence_duration = total_duration - audio_duration
+                
+                # Pad audio with silence to match total_duration
+                pad_cmd = [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                    "-i", audio_path,
+                    "-f", "lavfi", "-t", str(silence_duration),
+                    "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+                    "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[outa]",
+                    "-map", "[outa]",
+                    padded_audio_path
+                ]
+                
+                pad_result = subprocess.run(
+                    pad_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+                
+                if pad_result.returncode != 0:
+                    raise RuntimeError(f"오디오 패딩 실패:\n{pad_result.stderr}")
+                
+                final_audio_path = padded_audio_path
+            
             # Check for cancellation before final render
             if cancel_check and cancel_check():
                 return
@@ -796,8 +845,8 @@ class VideoRenderer:
                     "-i", f"color=c=black:s={self.width}x{self.height}:r={self.fps}"
                 ]
             
-            # Input 1: Audio
-            cmd += ["-i", audio_path]
+            # Input 1: Audio (possibly padded)
+            cmd += ["-i", final_audio_path]
             
             # Input 2: Subtitle video (optional)
             has_subtitle_video = subtitle_video_path and Path(subtitle_video_path).exists()
@@ -813,11 +862,12 @@ class VideoRenderer:
                 filter_complex = "[0:v]format=yuv420p[vfinal]"
             
             # Use detected encoder (GPU or CPU with multi-threading)
+            # NOTE: Removed -shortest flag to allow all streams to run to full duration
+            # All streams (video, audio, subtitle) are now pre-rendered to match total_duration
             cmd += [
                 "-filter_complex", filter_complex,
                 "-map", "[vfinal]",
                 "-map", "1:a:0",
-                "-shortest",
                 "-c:v", self._encoder_name,
                 *self._encoder_opts,
                 "-crf", "23",  # Better quality than 28
@@ -963,5 +1013,11 @@ class VideoRenderer:
             if image_video_path:
                 try:
                     os.remove(image_video_path)
+                except Exception:
+                    pass
+            # Clean up padded audio
+            if padded_audio_path:
+                try:
+                    os.remove(padded_audio_path)
                 except Exception:
                     pass

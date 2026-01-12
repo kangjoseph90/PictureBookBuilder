@@ -580,3 +580,22 @@ class RenderSettingsDialog(QDialog):
         valid_map = {k: str(v) for k, v in self.speaker_audio_map.items() if v}
         
         self.preview_widget.set_audio_clips(audio_clips, valid_map)
+        
+        # Calculate total duration from all clips (audio, image, subtitle)
+        # This mirrors the logic in VideoRenderer to ensure consistency
+        max_duration = 0.0
+        
+        # 1. Check audio clips
+        for clip in audio_clips:
+            # clip is ScheduledClip(duration=..., timeline_end=...)
+            max_duration = max(max_duration, clip.timeline_end)
+            
+        # 2. Check other clips (image, subtitle) from self.clips
+        for clip in self.clips:
+            if hasattr(clip, 'duration') and hasattr(clip, 'start'):
+                end_time = clip.start + clip.duration
+                max_duration = max(max_duration, end_time)
+        
+        # Update preview widget duration
+        if max_duration > 0:
+            self.preview_widget.set_total_duration(max_duration)
