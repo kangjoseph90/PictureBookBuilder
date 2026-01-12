@@ -2666,6 +2666,12 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
+        # Load image into cache for thumbnail display
+        from .image_cache import get_image_cache
+        cache = get_image_cache()
+        if not cache.is_loaded(image_path):
+            cache.load_images([image_path])
+        
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage(f"이미지가 삽입되었습니다: {new_clip.name}")
