@@ -181,6 +181,11 @@ class PreviewWidget(QWidget):
         self.subtitles_enabled = True
         self._last_prefetch_idx = -1  # Track last prefetched item index
         
+        # Debounce timer for high-res loading after scrubbing
+        self._prefetch_timer = QTimer(self)
+        self._prefetch_timer.setSingleShot(True)
+        self._prefetch_timer.timeout.connect(self._do_deferred_prefetch)
+        
         # Image cache for shared originals
         self._image_cache = get_image_cache()
         # Connect to image loaded signal for async updates
@@ -469,7 +474,7 @@ class PreviewWidget(QWidget):
         
         target_size = self.image_label.size()
         
-        # Get original from shared cache
+        # 1. Get original from shared cache (Best quality)
         original = self._image_cache.get_original(image_path)
         if original and not original.isNull():
             # Scale to fit label
@@ -482,9 +487,21 @@ class PreviewWidget(QWidget):
             self.showing_placeholder = False
             return
         
-        # Fallback: Do NOT load synchronously. Wait for signal.
-        # If we really wanted to show a loading spinner, we could do it here.
-        # For now, just keeping the previous frame or background is fine.
+        # 2. Fallback: Get medium-res preview thumbnail (Fast feedback)
+        preview_thumb = self._image_cache.get_thumbnail_preview(image_path)
+        if preview_thumb and not preview_thumb.isNull():
+            # Scale up to fit label (might be slightly blurry, but fast)
+            scaled = preview_thumb.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled)
+            self.showing_placeholder = False
+            return
+        
+        # 3. Last fallback: Keep previous frame or show placeholder if needed
+        # (The image_loaded signal will eventually trigger 1 or 2)
     
     def _format_time(self, ms: int) -> str:
         """Format milliseconds as M:SS"""
@@ -507,12 +524,14 @@ class PreviewWidget(QWidget):
                     break
 
             if current_idx != -1 and current_idx != self._last_prefetch_idx:
-                self._last_prefetch_idx = current_idx
-                # Prefetch current and next few images
-                next_clips = self.image_clips[current_idx : current_idx + 4]
-                paths_to_prefetch = [c['path'] for c in next_clips]
-                if paths_to_prefetch:
-                    self._image_cache.prefetch_images(paths_to_prefetch)
+                # If seeking (scrubbing), don't prefetch immediately to save I/O
+                if self.is_seeking:
+                    # Restart timer to prefetch only when scrubbing slows down or stops
+                    self._prefetch_timer.start(200) # 200ms debounce
+                else:
+                    self._request_prefetch(current_idx)
+
+        # Update image and subtitle if we have clips
 
         # Update image and subtitle if we have clips
         image = self._get_current_image(position_ms)
@@ -667,6 +686,19 @@ class PreviewWidget(QWidget):
         value = self.seek_slider.value()
         position = int(value / 1000 * self.total_duration * 1000)
         self.audio_mixer.seek(position / 1000.0)
+        
+        # Force immediate prefetch when user stops scrubbing
+        self._prefetch_timer.stop()
+        
+        pos_sec = self.audio_mixer.position_ms / 1000.0
+        current_idx = -1
+        for i, clip in enumerate(self.image_clips):
+            if clip['start'] <= pos_sec <= clip['end']:
+                current_idx = i
+                break
+        
+        if current_idx != -1:
+            self._request_prefetch(current_idx)
     
     def _on_seek(self, value: int):
         """Handle seek slider drag"""
@@ -677,6 +709,35 @@ class PreviewWidget(QWidget):
             )
             # Update image and subtitle preview while seeking
             self._update_preview_content(position_ms)
+            
+    def _request_prefetch(self, current_idx: int):
+        """Request prefetch for a range of images around the current one"""
+        if not self.image_clips:
+            return
+            
+        self._last_prefetch_idx = current_idx
+        
+        # Bidirectional prefetch: 2 before, current, 2 after (total 5)
+        start_idx = max(0, current_idx - 2)
+        end_idx = min(len(self.image_clips), current_idx + 3)
+        
+        target_clips = self.image_clips[start_idx : end_idx]
+        paths = [c['path'] for c in target_clips]
+        
+        if paths:
+            self._image_cache.prefetch_images(paths)
+            
+    def _do_deferred_prefetch(self):
+        """Perform prefetch for the current position (used when scrubbing stops)"""
+        pos_sec = self.audio_mixer.position_ms / 1000.0
+        current_idx = -1
+        for i, clip in enumerate(self.image_clips):
+            if clip['start'] <= pos_sec <= clip['end']:
+                current_idx = i
+                break
+        
+        if current_idx != -1:
+            self._request_prefetch(current_idx)
     
     def resizeEvent(self, event):
         """Handle resize to refresh image scaling and subtitle position"""
