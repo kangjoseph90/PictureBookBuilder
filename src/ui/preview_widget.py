@@ -182,9 +182,18 @@ class PreviewWidget(QWidget):
         
         # Image cache for shared originals
         self._image_cache = get_image_cache()
+        # Connect to image loaded signal for async updates
+        self._image_cache.image_loaded.connect(self._on_image_loaded)
         
         self._setup_ui()
         self._setup_audio_mixer()
+
+    def _on_image_loaded(self, path: str):
+        """Handle async image loading completion"""
+        # If the loaded image is the one we are currently supposed to show, update it
+        if hasattr(self, 'current_image') and self.current_image == path:
+            # Re-trigger set_image which will now find it in cache
+            self.set_image(path)
     
     def _setup_ui(self):
         """Setup the UI"""
@@ -468,19 +477,12 @@ class PreviewWidget(QWidget):
                 Qt.TransformationMode.SmoothTransformation
             )
             self.image_label.setPixmap(scaled)
+            self.showing_placeholder = False
             return
         
-        # Fallback: Load synchronously (if cache not ready yet)
-        pixmap = QPixmap(image_path)
-        if pixmap.isNull():
-            return
-        
-        scaled = pixmap.scaled(
-            target_size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.image_label.setPixmap(scaled)
+        # Fallback: Do NOT load synchronously. Wait for signal.
+        # If we really wanted to show a loading spinner, we could do it here.
+        # For now, just keeping the previous frame or background is fine.
     
     def _format_time(self, ms: int) -> str:
         """Format milliseconds as M:SS"""

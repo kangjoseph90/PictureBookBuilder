@@ -2602,6 +2602,13 @@ class MainWindow(QMainWindow):
             self.timeline_widget.canvas._background_dirty = True
             self.timeline_widget.canvas.update()
             
+            # Load new image into cache
+            from .image_cache import get_image_cache
+            cache = get_image_cache()
+            if not cache.is_loaded(path):
+                cache.load_images([path])
+            
+            
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
             self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
             self.statusBar().showMessage(f"이미지가 변경되었습니다: {clip.name}")
@@ -3324,6 +3331,13 @@ class MainWindow(QMainWindow):
         
         self.timeline_widget.set_clips(clips)
         self.preview_widget.set_timeline_clips(clips)
+        
+        # Pre-load all images used in timeline clips (including external images)
+        clip_image_paths = [c.image_path for c in clips if c.clip_type == "image" and c.image_path]
+        if clip_image_paths:
+            from .image_cache import get_image_cache
+            get_image_cache().load_images(clip_image_paths)
+            print(f"Pre-loading {len(clip_image_paths)} images from timeline clips")
         
         # Restore speaker-audio mapping table
         self.speakers = list(self.speaker_audio_map.keys())
