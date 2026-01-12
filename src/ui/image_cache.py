@@ -7,6 +7,7 @@ All components share the same cache.
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal, QSize, Qt
@@ -36,9 +37,10 @@ class ImageCache(QObject):
     # args: path, original_qimage, small_qimage, timeline_qimage
     _image_processed = pyqtSignal(str, QImage, QImage, QImage)
     
-    def __init__(self, max_workers: int = 4):
+    def __init__(self, max_workers: int = 4, capacity: int = 20):
         super().__init__()
-        self._originals: dict[str, QPixmap] = {}  # path -> original pixmap
+        self._originals: OrderedDict[str, QPixmap] = OrderedDict()  # path -> original pixmap (LRU)
+        self._capacity = capacity
         self._thumbnails_small: dict[str, QPixmap] = {}  # path -> 48x48 thumbnail
         self._thumbnails_timeline: dict[str, QPixmap] = {}  # path -> timeline thumbnail
         self._lock = threading.Lock()
@@ -51,11 +53,19 @@ class ImageCache(QObject):
     
     def load_images(self, paths: list[str]):
         """
-        Load multiple images in background.
-        
-        Loads originals and generates all thumbnail sizes upfront.
-        Emits image_loaded signal for each completed image.
+        Load thumbnails only in background (to save memory).
+        Does NOT load original image into cache.
         """
+        self._batch_load(paths, load_original=False)
+
+    def prefetch_images(self, paths: list[str]):
+        """
+        Prefetch full original images in background.
+        Useful for playback lookahead.
+        """
+        self._batch_load(paths, load_original=True)
+
+    def _batch_load(self, paths: list[str], load_original: bool):
         if not self._is_running:
             return
 
@@ -64,14 +74,24 @@ class ImageCache(QObject):
                 continue
             
             with self._lock:
-                if path in self._originals or path in self._pending:
+                # If we need original and it's already there, skip
+                if load_original and path in self._originals:
+                    self._originals.move_to_end(path)
                     continue
+
+                # If we don't need original, check if thumbnails exist
+                if not load_original and path in self._thumbnails_small:
+                    continue
+
+                if path in self._pending:
+                    continue
+
                 self._pending.add(path)
             
-            self._executor.submit(self._load_image, path)
-    
-    def _load_image(self, path: str):
-        """Load image and generate thumbnails in background (Thread-Safe QImage ops only)"""
+            self._executor.submit(self._load_image, path, load_original)
+
+    def _load_image(self, path: str, load_original: bool):
+        """Load image and generate thumbnails in background"""
         if not self._is_running:
             return
             
@@ -86,16 +106,13 @@ class ImageCache(QObject):
             if not self._is_running:
                 return
 
-            # Generate thumbnails using QImage (thread-safe)
+            # Generate thumbnails
             thumb_small = image.scaled(
                 THUMBNAIL_SIZE_SMALL,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             
-            if not self._is_running:
-                return
-
             thumb_timeline = image.scaled(
                 THUMBNAIL_SIZE_TIMELINE,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -105,12 +122,13 @@ class ImageCache(QObject):
             if not self._is_running:
                 return
 
-            # Send QImages to main thread for QPixmap conversion
-            # Wrap in try-except to handle case where object is deleted during shutdown
+            # Decide what to send back
+            # If load_original is False, send QImage() as the original
+            final_original = image if load_original else QImage()
+
             try:
-                self._image_processed.emit(path, image, thumb_small, thumb_timeline)
+                self._image_processed.emit(path, final_original, thumb_small, thumb_timeline)
             except RuntimeError:
-                # Occurs if the C++ object is deleted while thread is running (app shutdown)
                 pass
             
         except Exception as e:
@@ -120,6 +138,11 @@ class ImageCache(QObject):
                 with self._lock:
                     self._pending.discard(path)
 
+    def _enforce_capacity(self):
+        """Enforce LRU capacity on originals"""
+        while len(self._originals) > self._capacity:
+            self._originals.popitem(last=False)  # Pop oldest (first) item
+
     def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage):
         """Handle processed images on the main thread"""
         if not self._is_running:
@@ -127,12 +150,17 @@ class ImageCache(QObject):
             
         try:
             # Convert to QPixmap (Must be done on main thread)
-            pix_original = QPixmap.fromImage(original)
+            # Only create pixmap if original is valid (it might be null if we only wanted thumbnails)
+            pix_original = QPixmap.fromImage(original) if not original.isNull() else None
             pix_small = QPixmap.fromImage(small)
             pix_timeline = QPixmap.fromImage(timeline)
             
             with self._lock:
-                self._originals[path] = pix_original
+                if pix_original:
+                    self._originals[path] = pix_original
+                    self._originals.move_to_end(path)
+                    self._enforce_capacity()
+
                 self._thumbnails_small[path] = pix_small
                 self._thumbnails_timeline[path] = pix_timeline
                 self._pending.discard(path)
@@ -147,7 +175,10 @@ class ImageCache(QObject):
     def get_original(self, path: str) -> Optional[QPixmap]:
         """Get original pixmap for preview display"""
         with self._lock:
-            return self._originals.get(path)
+            if path in self._originals:
+                self._originals.move_to_end(path)
+                return self._originals[path]
+            return None
     
     def get_thumbnail_small(self, path: str) -> Optional[QPixmap]:
         """Get small thumbnail (48x48) for image list"""

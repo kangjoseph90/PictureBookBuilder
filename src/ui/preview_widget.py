@@ -491,6 +491,24 @@ class PreviewWidget(QWidget):
     
     def _update_preview_content(self, position_ms: int):
         """Update image and subtitle for the given position"""
+        # Lookahead prefetching (load next 3 images)
+        if self.image_clips:
+            current_idx = -1
+            pos_sec = position_ms / 1000.0
+
+            # Find current index
+            for i, clip in enumerate(self.image_clips):
+                if clip['start'] <= pos_sec <= clip['end']:
+                    current_idx = i
+                    break
+
+            if current_idx != -1:
+                # Prefetch current and next few images
+                next_clips = self.image_clips[current_idx : current_idx + 4]
+                paths_to_prefetch = [c['path'] for c in next_clips]
+                if paths_to_prefetch:
+                    self._image_cache.prefetch_images(paths_to_prefetch)
+
         # Update image and subtitle if we have clips
         image = self._get_current_image(position_ms)
         
