@@ -954,6 +954,7 @@ class MainWindow(QMainWindow):
 
     def _on_undo_redo_callback(self):
         """Callback after undo/redo to refresh UI"""
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         self.timeline_widget.canvas._update_total_duration()
 
