@@ -229,6 +229,7 @@ class ImageCache(QObject):
             self._originals.clear()
             self._thumbnails_small.clear()
             self._thumbnails_timeline.clear()
+            self._thumbnails_preview.clear()
             self._pending.clear()
     
     def cleanup(self):

@@ -535,6 +535,14 @@ class MainWindow(QMainWindow):
         self._setup_menu_bar()
         self._setup_ui()
 
+    def closeEvent(self, event):
+        """Handle application close - cleanup resources"""
+        # Cleanup global image cache
+        from .image_cache import get_image_cache
+        get_image_cache().cleanup()
+        
+        event.accept()
+    
     def _make_unique_clip_id(self, base_id: str) -> str:
         """Generate a clip id that is unique within the current timeline."""
         clips = getattr(self.timeline_widget.canvas, 'clips', [])
@@ -1080,6 +1088,10 @@ class MainWindow(QMainWindow):
     def _reload_image_folder(self):
         """Reload images from the current image folder"""
         if self.image_folder:
+            # Clear cache to force reload (in case files changed)
+            from .image_cache import get_image_cache
+            get_image_cache().clear()
+            
             self._populate_image_list(self.image_folder)
             self.statusBar().showMessage(f"이미지 폴더를 다시 불러왔습니다: {self.image_folder}")
     
@@ -3107,6 +3119,10 @@ class MainWindow(QMainWindow):
             elif reply == QMessageBox.StandardButton.Yes:
                 self._save_project()
         
+        # Clear image cache to prevent stale data
+        from .image_cache import get_image_cache
+        get_image_cache().clear()
+        
         # Reset state
         self.script_path = None
         self.image_folder = None
@@ -3258,6 +3274,10 @@ class MainWindow(QMainWindow):
         """Load project data from dictionary"""
         from ui.timeline_widget import TimelineClip
         from PyQt6.QtGui import QColor
+        
+        # Clear image cache before loading new project
+        from .image_cache import get_image_cache
+        get_image_cache().clear()
         
         # Load basic info
         self.script_path = data.get('script_path')

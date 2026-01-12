@@ -780,6 +780,12 @@ class PreviewWidget(QWidget):
 
     def cleanup(self):
         """Cleanup resources"""
+        # Disconnect image cache signal to prevent signals to deleted widget
+        try:
+            self._image_cache.image_loaded.disconnect(self._on_image_loaded)
+        except (TypeError, RuntimeError):
+            pass  # Already disconnected or object deleted
+        
         self.audio_mixer.cleanup()
 
 
