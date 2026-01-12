@@ -60,7 +60,7 @@ class VideoRenderer:
         try:
             cmd = [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+                "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1",
                 "-frames:v", "1", "-c:v", encoder_name, *encoder_opts,
                 "-f", "null", "-"
             ]
@@ -76,7 +76,9 @@ class VideoRenderer:
                 ("h264_amf", ["-quality", "balanced"]),
             ]:
                 if self._test_encoder_works(enc, opts):
+                    print(f"Using {enc} encoder")
                     return (enc, opts)
+        print("Using libx264 encoder")
         return ("libx264", ["-preset", "medium", "-threads", "0"])
 
     def _render_subtitle_png(self, text: str, settings: dict, width: int, height: int) -> str:
