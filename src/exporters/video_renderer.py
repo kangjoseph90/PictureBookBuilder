@@ -59,6 +59,63 @@ class VideoRenderer:
         self.width = width
         self.height = height
         self.fps = fps
+        
+        # Detect best encoder on init
+        self._encoder_name, self._encoder_opts = self._detect_best_encoder()
+
+    def _test_encoder_works(self, encoder_name: str, encoder_opts: list[str]) -> bool:
+        """Actually test if an encoder works by encoding a tiny test frame.
+        
+        This is more reliable than just checking if the encoder is listed,
+        because GPU encoders can be listed but fail due to missing drivers.
+        """
+        try:
+            # Create a minimal test: 1 frame of 64x64 black video
+            test_cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+                "-frames:v", "1",
+                "-c:v", encoder_name,
+                *encoder_opts,
+                "-f", "null", "-"  # Output to null (no file created)
+            ]
+            
+            result = subprocess.run(
+                test_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10
+            )
+            
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _detect_best_encoder(self) -> tuple[str, list[str]]:
+        """Detect best available H.264 encoder (GPU > CPU)
+        
+        Actually tests each encoder to ensure it works, not just listed.
+        
+        Returns:
+            Tuple of (encoder_name, encoder_options_list)
+        """
+        # GPU encoders in priority order
+        gpu_encoders = [
+            ("h264_nvenc", ["-preset", "p4", "-tune", "hq", "-rc", "vbr"]),  # NVIDIA
+            ("h264_qsv", ["-preset", "medium"]),  # Intel QuickSync
+            ("h264_amf", ["-quality", "balanced"]),  # AMD
+        ]
+        
+        for encoder, opts in gpu_encoders:
+            if self._test_encoder_works(encoder, opts):
+                print(f"[VideoRenderer] Using GPU encoder: {encoder}")
+                return (encoder, opts)
+        
+        # Fallback: CPU with multi-threading
+        print("[VideoRenderer] Using CPU encoder: libx264 (multi-threaded)")
+        return ("libx264", ["-preset", "medium", "-threads", "0"])
 
     def _get_audio_duration_seconds(self, audio_path: str | Path) -> float:
         audio_path = str(audio_path)
@@ -630,64 +687,119 @@ class VideoRenderer:
                     raise RuntimeError(f"자막 비디오 생성 실패:\n{sub_result.stderr}")
             
             if progress_callback:
-                progress_callback(10, "FFmpeg 렌더 준비 중...")
-
-            cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
-
-            # Visual inputs
-            for (img_path, dur) in visuals:
-                dur = max(0.001, float(dur))
-                if img_path is None:
-                    cmd += [
-                        "-f", "lavfi", "-t", f"{dur}",
-                        "-i", f"color=c=black:s={self.width}x{self.height}:r={self.fps}",
-                    ]
-                else:
-                    cmd += ["-loop", "1", "-t", f"{dur}", "-i", str(img_path)]
-
-            # Audio input
-            audio_input_index = len(visuals)
-            cmd += ["-i", audio_path]
-
-            # Subtitle video input (single file instead of many PNGs)
-            subtitle_input_index = None
-            if subtitle_video_path and Path(subtitle_video_path).exists():
-                subtitle_input_index = audio_input_index + 1
-                cmd += ["-i", subtitle_video_path]
-
-            # Build filter graph
-            filter_parts: list[str] = []
+                progress_callback(10, "이미지 비디오 생성 중...")
             
-            # Scale and pad video inputs
-            for i in range(len(visuals)):
-                filter_parts.append(
-                    f"[{i}:v]scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-                    f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuva420p[v{i}]"
+            # =====================================================================
+            # Pre-render images to intermediate video (MEMORY OPTIMIZATION)
+            # 
+            # Instead of loading all images as separate FFmpeg inputs (10GB+ RAM),
+            # we create a single image video using concat demuxer.
+            # This processes images ONE AT A TIME, keeping memory usage low.
+            # =====================================================================
+            image_video_path: str | None = None
+            image_concat_file_path: str | None = None
+            
+            if visuals:
+                # Create concat demuxer file for image timeline
+                fd, image_concat_file_path = tempfile.mkstemp(prefix="pbb_img_concat_", suffix=".txt")
+                os.close(fd)
+                
+                # Create a black frame PNG for gaps
+                black_frame_path = None
+                has_gaps = any(img_path is None for img_path, dur in visuals)
+                if has_gaps:
+                    black_img = QImage(self.width, self.height, QImage.Format.Format_RGB32)
+                    black_img.fill(QColor(0, 0, 0))
+                    fd, black_frame_path = tempfile.mkstemp(prefix="pbb_black_", suffix=".png")
+                    os.close(fd)
+                    black_img.save(black_frame_path, "PNG")
+                
+                with open(image_concat_file_path, "w", encoding="utf-8") as cf:
+                    for img_path, dur in visuals:
+                        # Use black frame for None (gaps in timeline)
+                        actual_path = img_path if img_path else black_frame_path
+                        escaped_path = actual_path.replace("\\", "/").replace("'", "'\\''")
+                        cf.write(f"file '{escaped_path}'\n")
+                        cf.write(f"duration {dur}\n")
+                
+                # Create intermediate image video
+                fd, image_video_path = tempfile.mkstemp(prefix="pbb_images_", suffix=".mov")
+                os.close(fd)
+                
+                # Pre-render images with scaling (lossless intermediate)
+                img_cmd = [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                    "-f", "concat", "-safe", "0", "-i", image_concat_file_path,
+                    "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                           f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",  # Lossless
+                    "-pix_fmt", "yuv420p",
+                    "-r", str(self.fps),
+                    image_video_path
+                ]
+                
+                img_result = subprocess.run(
+                    img_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
                 )
-
-            # Concat video segments
-            concat_inputs = "".join([f"[v{i}]" for i in range(len(visuals))])
-            filter_parts.append(f"{concat_inputs}concat=n={len(visuals)}:v=1:a=0[vcat]")
-
-            # Overlay subtitle video (single overlay, much simpler)
-            if subtitle_input_index is not None:
-                filter_parts.append(f"[vcat][{subtitle_input_index}:v]overlay=0:0:format=auto[vout]")
+                
+                if img_result.returncode != 0:
+                    raise RuntimeError(f"이미지 비디오 생성 실패:\n{img_result.stderr}")
+                
+                # Clean up black frame
+                if black_frame_path:
+                    try:
+                        os.remove(black_frame_path)
+                    except Exception:
+                        pass
+            
+            if progress_callback:
+                progress_callback(15, "최종 렌더링 준비 중...")
+            
+            # =====================================================================
+            # SIMPLIFIED FINAL RENDER: Only 3 inputs (image video, subtitle video, audio)
+            # This dramatically reduces memory usage and filter complexity
+            # =====================================================================
+            cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
+            
+            # Input 0: Pre-rendered image video
+            if image_video_path and Path(image_video_path).exists():
+                cmd += ["-i", image_video_path]
             else:
-                filter_parts.append("[vcat]null[vout]")
-
-            # Final format conversion
-            filter_parts.append("[vout]format=yuv420p[vfinal]")
-
-            filter_complex = ";".join(filter_parts)
-
+                # Fallback: generate black video for total duration
+                cmd += [
+                    "-f", "lavfi", "-t", str(total_duration),
+                    "-i", f"color=c=black:s={self.width}x{self.height}:r={self.fps}"
+                ]
+            
+            # Input 1: Audio
+            cmd += ["-i", audio_path]
+            
+            # Input 2: Subtitle video (optional)
+            has_subtitle_video = subtitle_video_path and Path(subtitle_video_path).exists()
+            if has_subtitle_video:
+                cmd += ["-i", subtitle_video_path]
+            
+            # Build simplified filter graph
+            if has_subtitle_video:
+                # Overlay subtitles on images
+                filter_complex = "[0:v][2:v]overlay=0:0:format=auto,format=yuv420p[vfinal]"
+            else:
+                # No subtitles, just pass through
+                filter_complex = "[0:v]format=yuv420p[vfinal]"
+            
+            # Use detected encoder (GPU or CPU with multi-threading)
             cmd += [
                 "-filter_complex", filter_complex,
                 "-map", "[vfinal]",
-                "-map", f"{audio_input_index}:a:0",
+                "-map", "1:a:0",
                 "-shortest",
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "28",
+                "-c:v", self._encoder_name,
+                *self._encoder_opts,
+                "-crf", "23",  # Better quality than 28
                 "-pix_fmt", "yuv420p",
                 "-r", str(self.fps),
                 "-c:a", "aac",
@@ -769,7 +881,7 @@ class VideoRenderer:
                 m = re.match(r"out_time_ms=(\d+)", line.strip())
                 if m and total_us > 0:
                     out_us = int(m.group(1))
-                    pct = int(min(99, 10 + (out_us / total_us) * 89))  # 10-99 range
+                    pct = int(min(99, 15 + (out_us / total_us) * 84))  # 15-99 range (accounts for pre-rendering)
                     if pct != last_pct:
                         last_pct = pct
                         if progress_callback:
@@ -810,5 +922,16 @@ class VideoRenderer:
             if subtitle_video_path:
                 try:
                     os.remove(subtitle_video_path)
+                except Exception:
+                    pass
+            # Clean up image video temp files
+            if image_concat_file_path:
+                try:
+                    os.remove(image_concat_file_path)
+                except Exception:
+                    pass
+            if image_video_path:
+                try:
+                    os.remove(image_video_path)
                 except Exception:
                     pass
