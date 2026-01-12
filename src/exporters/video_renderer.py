@@ -714,8 +714,56 @@ class VideoRenderer:
             if proc.stdout is None:
                 raise RuntimeError("FFmpeg 실행에 실패했습니다.")
 
+            # ================================================================
+            # Threaded output reader with stall detection
+            # 
+            # Windows does not support non-blocking reads or select() on pipes.
+            # To detect FFmpeg hangs, we use a background thread to read stdout
+            # and push lines to a Queue. The main thread reads from the queue
+            # with a timeout, allowing us to detect stalls.
+            # ================================================================
+            import queue
+            import threading
+            
+            output_queue: queue.Queue = queue.Queue()
+            reader_exception: list[Exception] = []
+            
+            def reader_thread():
+                """Background thread to read FFmpeg output"""
+                try:
+                    for line in proc.stdout:
+                        output_queue.put(line)
+                except Exception as e:
+                    reader_exception.append(e)
+                finally:
+                    output_queue.put(None)  # Signal end of output
+            
+            reader = threading.Thread(target=reader_thread, daemon=True)
+            reader.start()
+            
             combined_output: list[str] = []
-            for line in proc.stdout:
+            stall_timeout = 60  # seconds - no output for this long = stall
+            
+            while True:
+                try:
+                    line = output_queue.get(timeout=stall_timeout)
+                except queue.Empty:
+                    # No output for 60 seconds - likely stalled
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    raise RuntimeError(
+                        f"FFmpeg가 {stall_timeout}초 동안 응답하지 않아 렌더링을 중단했습니다. "
+                        "출력 파일이 손상되었거나 FFmpeg가 멈춘 것으로 보입니다."
+                    )
+                
+                if line is None:
+                    # End of output
+                    break
+                
                 combined_output.append(line)
 
                 m = re.match(r"out_time_ms=(\d+)", line.strip())
@@ -729,6 +777,10 @@ class VideoRenderer:
 
                 if line.strip() == "progress=end":
                     break
+            
+            # Check if reader thread encountered an error
+            if reader_exception:
+                raise reader_exception[0]
 
             rc = proc.wait()
             if rc != 0:
