@@ -109,7 +109,8 @@ class AudioMixer(QObject):
         if self.clips:
             clips_duration = max(c.timeline_end for c in self.clips)
             
-        self._duration = max(clips_duration, self._min_duration)
+        # Enforce minimum duration (0.1s) to prevent edge cases
+        self._duration = max(clips_duration, self._min_duration, 0.1)
         self.duration_changed.emit(self._duration)
         
     def set_duration(self, duration: float):
@@ -236,8 +237,14 @@ class AudioMixer(QObject):
             
         self._last_tick_time = current_time
         
-        # Check if we've reached the end
+        # Check if we've reached the end (with safety margin for edge cases)
         if self._position >= self._duration:
+            self._position = self._duration
+            self.stop()
+            return
+        
+        # Safety: Stop if position significantly exceeds duration (edge case protection)
+        if self._position > self._duration + 0.5:
             self._position = self._duration
             self.stop()
             return
