@@ -7,6 +7,7 @@ All components share the same cache.
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal, QSize, Qt
@@ -36,9 +37,11 @@ class ImageCache(QObject):
     # args: path, original_qimage, small_qimage, timeline_qimage
     _image_processed = pyqtSignal(str, QImage, QImage, QImage)
     
+    MAX_ORIGINALS_CACHE = 20
+
     def __init__(self, max_workers: int = 4):
         super().__init__()
-        self._originals: dict[str, QPixmap] = {}  # path -> original pixmap
+        self._originals: OrderedDict[str, QPixmap] = OrderedDict()  # path -> original pixmap
         self._thumbnails_small: dict[str, QPixmap] = {}  # path -> 48x48 thumbnail
         self._thumbnails_timeline: dict[str, QPixmap] = {}  # path -> timeline thumbnail
         self._lock = threading.Lock()
@@ -132,7 +135,14 @@ class ImageCache(QObject):
             pix_timeline = QPixmap.fromImage(timeline)
             
             with self._lock:
+                # Enforce LRU limit for originals
+                if path not in self._originals and len(self._originals) >= self.MAX_ORIGINALS_CACHE:
+                    # Remove oldest accessed (first item)
+                    self._originals.popitem(last=False)
+
                 self._originals[path] = pix_original
+                self._originals.move_to_end(path)
+
                 self._thumbnails_small[path] = pix_small
                 self._thumbnails_timeline[path] = pix_timeline
                 self._pending.discard(path)
@@ -147,7 +157,10 @@ class ImageCache(QObject):
     def get_original(self, path: str) -> Optional[QPixmap]:
         """Get original pixmap for preview display"""
         with self._lock:
-            return self._originals.get(path)
+            if path in self._originals:
+                self._originals.move_to_end(path)
+                return self._originals[path]
+            return None
     
     def get_thumbnail_small(self, path: str) -> Optional[QPixmap]:
         """Get small thumbnail (48x48) for image list"""
@@ -197,4 +210,3 @@ def get_image_cache() -> ImageCache:
     if _global_cache is None:
         _global_cache = ImageCache()
     return _global_cache
-
