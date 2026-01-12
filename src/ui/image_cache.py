@@ -188,9 +188,9 @@ class ImageCache(QObject):
         with self._lock:
             if path in self._originals:
                 self._originals.move_to_end(path)
-                print(f"[Cache] Hit Original: {Path(path).name}")
+                #print(f"[Cache] Hit Original: {Path(path).name}")
                 return self._originals[path]
-            print(f"[Cache] Miss Original: {Path(path).name}")
+            #print(f"[Cache] Miss Original: {Path(path).name}")
             return None
     
     def get_thumbnail_small(self, path: str) -> Optional[QPixmap]:
