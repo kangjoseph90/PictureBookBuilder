@@ -624,6 +624,12 @@ class MainWindow(QMainWindow):
         load_images_action.triggered.connect(self._load_image_folder)
         project_menu.addAction(load_images_action)
         
+        self.reload_images_action = QAction("이미지 폴더 다시읽기", self)
+        self.reload_images_action.setShortcut("F6")
+        self.reload_images_action.triggered.connect(self._reload_image_folder)
+        self.reload_images_action.setEnabled(False)  # 이미지 폴더가 설정되면 활성화
+        project_menu.addAction(self.reload_images_action)
+        
         # --- Tools Menu ---
         tools_menu = menu_bar.addMenu("도구")
         
@@ -1062,9 +1068,18 @@ class MainWindow(QMainWindow):
             self.image_folder = path
             self._populate_image_list(path)
             
+            # Enable reload action
+            self.reload_images_action.setEnabled(True)
+            
             # If processing is already done, enable apply button
             if self.timeline_widget.canvas.clips:
                 self.action_apply_images.setEnabled(True)
+    
+    def _reload_image_folder(self):
+        """Reload images from the current image folder"""
+        if self.image_folder:
+            self._populate_image_list(self.image_folder)
+            self.statusBar().showMessage(f"이미지 폴더를 다시 불러왔습니다: {self.image_folder}")
     
     def _populate_image_list(self, folder_path: str):
         """Populate image list with thumbnails (loads all upfront, natural sorting)"""
@@ -3090,7 +3105,8 @@ class MainWindow(QMainWindow):
         self.action_export_xml.setEnabled(False)
         self.action_render.setEnabled(False)
         self.action_apply_images.setEnabled(False)
-        self.action_export_audio.setEnabled(False) # Added this line
+        self.action_export_audio.setEnabled(False)
+        self.reload_images_action.setEnabled(False)
         
         # Reset preview
         self.preview_widget.clear_preview()
@@ -3307,8 +3323,10 @@ class MainWindow(QMainWindow):
         print(f"Loading image folder: {self.image_folder}")
         if self.image_folder and Path(self.image_folder).exists():
             self._populate_image_list(self.image_folder)
+            self.reload_images_action.setEnabled(True)
             print(f"  Loaded images with thumbnails")
         else:
+            self.reload_images_action.setEnabled(False)
             print(f"  Image folder not found or empty: {self.image_folder}")
         
         # Enable buttons if we have clips
