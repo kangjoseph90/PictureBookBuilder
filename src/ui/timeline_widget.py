@@ -324,6 +324,20 @@ class TimelineCanvas(QWidget):
                 return clip
         return None
     
+    def get_clips_at(self, x: float, y: float) -> list[TimelineClip]:
+        """Get all clips at a given position"""
+        hit_clips = []
+        # Iterate in reverse order (top to bottom visual)
+        for clip in reversed(self.clips):
+            clip_x = self.time_to_x(clip.start)
+            clip_width = clip.duration * self.zoom
+            clip_y = self.get_track_y(clip.track)
+            
+            if (clip_x <= x <= clip_x + clip_width and 
+                clip_y <= y <= clip_y + self.track_height):
+                hit_clips.append(clip)
+        return hit_clips
+    
     def get_clip_edge_at(self, x: float, y: float) -> tuple[Optional[TimelineClip], str]:
         """Check if mouse is near a clip edge
         
@@ -424,6 +438,9 @@ class TimelineCanvas(QWidget):
 
                     self._draw_clip(painter, clip)
                     break
+        
+        # 3. Draw overlaps on top of clips
+        self._draw_overlaps(painter)
 
         painter.end()
         self._background_dirty = False
@@ -603,6 +620,57 @@ class TimelineCanvas(QWidget):
                 painter.drawText(text_rect, 
                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
     
+    def _draw_overlaps(self, painter: QPainter):
+        """Draw red overlay on overlapping clip regions"""
+        tracks: dict[int, list[TimelineClip]] = {}
+        for clip in self.clips:
+            if clip.track not in tracks:
+                tracks[clip.track] = []
+            tracks[clip.track].append(clip)
+        
+        # Style for overlap highlight - rounded to match clip aesthetic
+        painter.setPen(QPen(QColor(255, 80, 80, 150), 1))
+        painter.setBrush(QColor(255, 50, 50, 80))  # Semi-transparent red
+        
+        for track, track_clips in tracks.items():
+            if len(track_clips) < 2:
+                continue
+            
+            # Create events: (time, type) where type -1=end, 1=start
+            events = []
+            for clip in track_clips:
+                events.append((clip.start, 1))
+                events.append((clip.start + clip.duration, -1))
+            
+            # Process END (-1) before START (1) to NOT count touching as overlap
+            events.sort(key=lambda x: (x[0], x[1]))
+            
+            active_count = 0
+            overlap_start = None
+            
+            for i in range(len(events)):
+                time, type_ = events[i]
+                prev_count = active_count
+                active_count += type_
+                
+                # Wait until we process all events at the same timestamp
+                if i + 1 < len(events) and events[i+1][0] == time:
+                    continue
+                
+                # Identify continuous overlap segments (where at least 2 clips coexist)
+                # Group adjacent segments into one block for clean rounded corners
+                if prev_count < 2 and active_count >= 2:
+                    overlap_start = time
+                elif prev_count >= 2 and active_count < 2:
+                    if overlap_start is not None and time > overlap_start:
+                        x = self.time_to_x(overlap_start)
+                        width = (time - overlap_start) * self.zoom
+                        y = self.get_track_y(track)
+                        height = self.track_height
+                        # Use rounded rect to match clip style (radius 3)
+                        painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
+                        overlap_start = None
+
     def _draw_thumbnail(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
         """Draw a thumbnail at the start of the image clip"""
@@ -778,13 +846,21 @@ class TimelineCanvas(QWidget):
             self.update()
             return
         
-        clip = self.get_clip_at(x, y)
+        hit_clips = self.get_clips_at(x, y)
         
-        if clip:
-            self._background_dirty = True # Selection changed
-            self.selected_clip = clip.id
-            self.clip_selected.emit(clip.id)
+        if hit_clips:
+            self._background_dirty = True
             
+            # Choose correct clip from stack
+            # If current selection is in the stack, stick with it (allows dragging it)
+            # Selection cycling is now handled in mouseReleaseEvent for better UX
+            clip = hit_clips[0]
+            if self.selected_clip in [c.id for c in hit_clips]:
+                clip = next(c for c in hit_clips if c.id == self.selected_clip)
+            else:
+                self.selected_clip = clip.id
+                self.clip_selected.emit(clip.id)
+
             if event.button() == Qt.MouseButton.LeftButton:
                 self.dragging_clip = clip.id
                 self.drag_start_x = x
@@ -1080,6 +1156,17 @@ class TimelineCanvas(QWidget):
 
                 if modifications:
                      self.history_command_generated.emit('modify', {'modifications': modifications, 'description': 'Move clips'})
+            else:
+                # Clicked but didn't move: handle cycling if in a stack
+                hit_clips = self.get_clips_at(event.position().x(), event.position().y())
+                if len(hit_clips) > 1 and self.selected_clip in [c.id for c in hit_clips]:
+                    # Cycle to next clip in stack
+                    current_idx = next(i for i, c in enumerate(hit_clips) if c.id == self.selected_clip)
+                    next_idx = (current_idx + 1) % len(hit_clips)
+                    new_clip = hit_clips[next_idx]
+                    self.selected_clip = new_clip.id
+                    self.clip_selected.emit(new_clip.id)
+                    self._background_dirty = True
 
             self.dragging_clip = None
             self.active_snap_time = None
