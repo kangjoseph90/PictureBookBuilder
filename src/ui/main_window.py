@@ -1736,8 +1736,6 @@ class MainWindow(QMainWindow):
             )
             self.preview_widget.update_audio_clip(scheduled_clip)
             
-            self.preview_widget.update_audio_clip(scheduled_clip)
-            
         # Update total duration for ALL clip types
         all_clips = self.timeline_widget.canvas.clips
         total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
@@ -1772,8 +1770,6 @@ class MainWindow(QMainWindow):
                 source_path=speaker_audio_map.get(clip.speaker, ""),
                 duration=clip.duration
             )
-            self.preview_widget.update_audio_clip(scheduled_clip)
-            
             self.preview_widget.update_audio_clip(scheduled_clip)
             
         # Update total duration for ALL clip types
