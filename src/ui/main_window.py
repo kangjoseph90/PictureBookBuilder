@@ -1073,19 +1073,31 @@ class MainWindow(QMainWindow):
         self._image_path_to_item: dict[str, QListWidgetItem] = {}
         
         # Add items with placeholder icons immediately
-        image_paths = []
+        image_paths_to_load = []
         for f in images:
-            # Create item with placeholder (no thumbnail yet)
+            path_str = str(f)
+            
+            # Create item (will set icon below if cached)
             item = QListWidgetItem(f"🖼️ {f.name}")
-            item.setData(Qt.ItemDataRole.UserRole, str(f))
+            item.setData(Qt.ItemDataRole.UserRole, path_str)
             self.image_list.addItem(item)
             
             # Store mapping for async update
-            self._image_path_to_item[str(f)] = item
-            image_paths.append(str(f))
+            self._image_path_to_item[path_str] = item
+            
+            # Check if already cached - if so, apply thumbnail immediately
+            if cache.is_loaded(path_str):
+                pixmap = cache.get_thumbnail_small(path_str)
+                if pixmap and not pixmap.isNull():
+                    item.setIcon(QIcon(pixmap))
+                    item.setText(f.name)
+            else:
+                # Need to load this image
+                image_paths_to_load.append(path_str)
         
-        # Load all images in background (thumbnails generated automatically)
-        cache.load_images(image_paths)
+        # Load only images not already in cache
+        if image_paths_to_load:
+            cache.load_images(image_paths_to_load)
     
     def _on_thumbnail_ready(self, path: str):
         """Handle image load completion - update list item with thumbnail"""
