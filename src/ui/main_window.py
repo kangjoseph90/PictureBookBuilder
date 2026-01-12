@@ -537,6 +537,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle application close - cleanup resources"""
+        # Stop any running background threads to prevent thread leaks
+        if hasattr(self, 'processing_thread') and self.processing_thread is not None:
+            if self.processing_thread.isRunning():
+                self.processing_thread.quit()
+                self.processing_thread.wait()
+        
+        if hasattr(self, 'render_thread') and self.render_thread is not None:
+            if self.render_thread.isRunning():
+                self.render_thread.quit()
+                self.render_thread.wait()
+        
+        # Cleanup preview widget (includes AudioMixer cleanup)
+        if hasattr(self, 'preview_widget'):
+            self.preview_widget.cleanup()
+        
         # Cleanup global image cache
         from .image_cache import get_image_cache
         get_image_cache().cleanup()

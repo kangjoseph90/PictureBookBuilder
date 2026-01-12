@@ -237,12 +237,14 @@ class ImageCache(QObject):
         self._is_running = False
         
         # Cancel any pending futures and shutdown
+        # IMPORTANT: wait=True to ensure all background threads complete before returning
+        # This prevents thread leaks when the application closes
         try:
             # Python 3.9+ supports cancel_futures
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=True, cancel_futures=True)
         except TypeError:
             # Fallback for older python
-            self._executor.shutdown(wait=False)
+            self._executor.shutdown(wait=True)
         
         self.clear()
 
