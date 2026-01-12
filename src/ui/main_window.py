@@ -186,17 +186,19 @@ class ProgressDialog(QDialog):
 
 
 class RenderThread(QThread):
-    """Background thread for video rendering"""
+    """Background thread for video rendering (ALL-IN-ONE FFmpeg)"""
     progress = pyqtSignal(int, str)  # progress %, status message
     finished = pyqtSignal(bool, str)  # success, message
     
-    def __init__(self, image_clips, audio_path, subtitle_clips, output_path, render_settings=None):
+    def __init__(self, image_clips, audio_clips, subtitle_clips, output_path, 
+                 render_settings=None, speaker_audio_map=None):
         super().__init__()
         self.image_clips = image_clips
-        self.audio_path = audio_path
+        self.audio_clips = audio_clips  # Individual audio clips with timing
         self.subtitle_clips = subtitle_clips
         self.output_path = output_path
         self.render_settings = render_settings
+        self.speaker_audio_map = speaker_audio_map or {}
         self._cancelled = False
     
     def cancel(self):
@@ -237,13 +239,14 @@ class RenderThread(QThread):
             fps = self.render_settings.get('fps', 30) if self.render_settings else 30
 
             renderer = VideoRenderer(width=width, height=height, fps=fps)
-            self.progress.emit(10, "비디오 렌더링 중...")
+            self.progress.emit(5, "비디오 렌더링 중...")
             
-            # Render with progress callback and cancel check
+            # Render with all-in-one approach
             renderer.render(
                 images=images,
-                audio_path=str(self.audio_path),
                 subtitles=subtitles,
+                audio_clips=self.audio_clips,
+                speaker_audio_map=self.speaker_audio_map,
                 output_path=str(self.output_path),
                 progress_callback=self._on_render_progress,
                 settings=self.render_settings,
@@ -257,6 +260,8 @@ class RenderThread(QThread):
                 self.finished.emit(True, f"영상이 저장되었습니다:\n{self.output_path}")
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             if self._cancelled:
                 self.finished.emit(False, "사용자가 렌더링을 취소했습니다.")
             else:
@@ -3001,33 +3006,26 @@ class MainWindow(QMainWindow):
         self.action_render.setEnabled(False)
         self.statusBar().showMessage("렌더링 준비 중...")
         
-        # Collect image and subtitle clips
+        # Collect clips from timeline
         image_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"]
         subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
         
         # Filter subtitles if disabled in settings
         if not render_settings.get('subtitle_enabled', True):
             subtitle_clips = []
 
-        # Generate temp audio file for rendering
-        import tempfile
-        import os
-        try:
-            fd, temp_audio_path = tempfile.mkstemp(suffix='.wav')
-            os.close(fd)
-            self._create_merged_audio(temp_audio_path)
-            self._temp_render_audio = temp_audio_path
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"임시 오디오 생성 실패: {str(e)}")
-            return
+        # Get speaker audio map
+        speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
 
-        # Create and start render thread
+        # Create and start render thread (ALL-IN-ONE FFmpeg)
         self.render_thread = RenderThread(
             image_clips=image_clips,
-            audio_path=self._temp_render_audio,
+            audio_clips=audio_clips,
             subtitle_clips=subtitle_clips,
             output_path=path,
-            render_settings=render_settings
+            render_settings=render_settings,
+            speaker_audio_map=speaker_audio_map
         )
         self.render_thread.progress.connect(self._on_render_progress)
         self.render_thread.finished.connect(self._on_render_finished)
