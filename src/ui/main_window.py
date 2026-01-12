@@ -1295,6 +1295,7 @@ class MainWindow(QMainWindow):
 
         # Update timeline
         self.timeline_widget.canvas._update_total_duration()
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
         # Sync to preview
@@ -1795,6 +1796,7 @@ class MainWindow(QMainWindow):
             self.undo_stack.push(cmd)
             self._update_undo_redo_actions()
 
+            self.timeline_widget.canvas._background_dirty = True
             self.timeline_widget.canvas.update()
             self.statusBar().showMessage("자막이 수정되었습니다.")
             
@@ -2026,6 +2028,7 @@ class MainWindow(QMainWindow):
         self.undo_stack.push(macro_cmd)
         self._update_undo_redo_actions()
 
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -2172,6 +2175,7 @@ class MainWindow(QMainWindow):
         self.undo_stack.push(macro_cmd)
         self._update_undo_redo_actions()
 
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -2461,6 +2465,7 @@ class MainWindow(QMainWindow):
         self.undo_stack.push(cmd)
         self._update_undo_redo_actions()
 
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
@@ -2549,6 +2554,7 @@ class MainWindow(QMainWindow):
             self.undo_stack.push(cmd)
             self._update_undo_redo_actions()
 
+        self.timeline_widget.canvas._background_dirty = True
         self.timeline_widget.canvas.update()
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
@@ -2593,6 +2599,7 @@ class MainWindow(QMainWindow):
             self.undo_stack.push(cmd)
             self._update_undo_redo_actions()
 
+            self.timeline_widget.canvas._background_dirty = True
             self.timeline_widget.canvas.update()
             
             playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
