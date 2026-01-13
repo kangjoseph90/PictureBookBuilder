@@ -76,9 +76,7 @@ class VideoRenderer:
                 ("h264_amf", ["-quality", "balanced"]),
             ]:
                 if self._test_encoder_works(enc, opts):
-                    print(f"Using {enc} encoder")
                     return (enc, opts)
-        print("Using libx264 encoder")
         return ("libx264", ["-preset", "medium", "-threads", "0"])
 
     def _run_ffmpeg_with_progress(
@@ -250,6 +248,7 @@ class VideoRenderer:
             (self._gpu_encoder_name, self._gpu_encoder_opts) if use_hw 
             else (self._cpu_encoder_name, self._cpu_encoder_opts)
         )
+        print(f"Selected encoder: {self._encoder_name} (HW: {use_hw})")
 
         # Calculate total duration
         max_img = max((float(s.end_time) for s in images), default=0.0) if images else 0.0
