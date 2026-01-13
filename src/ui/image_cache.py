@@ -107,21 +107,24 @@ class ImageCache(QObject):
             if not self._is_running:
                 return
 
-            # Generate thumbnails
-            thumb_small = image.scaled(
-                THUMBNAIL_SIZE_SMALL,
+            # Generate thumbnails (Cascaded scaling for performance)
+            # 1. Largest thumbnail (Preview) from original
+            thumb_preview = image.scaled(
+                THUMBNAIL_SIZE_PREVIEW,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            
-            thumb_timeline = image.scaled(
+
+            # 2. Timeline thumbnail from Preview (faster than from original)
+            thumb_timeline = thumb_preview.scaled(
                 THUMBNAIL_SIZE_TIMELINE,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            
-            thumb_preview = image.scaled(
-                THUMBNAIL_SIZE_PREVIEW,
+
+            # 3. Small thumbnail from Timeline (fastest)
+            thumb_small = thumb_timeline.scaled(
+                THUMBNAIL_SIZE_SMALL,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
