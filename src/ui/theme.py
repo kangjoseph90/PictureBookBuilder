@@ -281,7 +281,7 @@ class ModernDarkTheme:
             background-color: #1E1E1E;
         }
         QSplitter::handle:hover {
-            background-color: #007ACC;
+            background-color: #3E3E42;
         }
     """
 
