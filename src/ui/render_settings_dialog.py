@@ -161,7 +161,7 @@ class RenderSettingsDialog(QDialog):
         self._set_btn_color(self.btn_outline_color, self.settings['outline_color'])
 
         self.spin_outline_width = QSpinBox()
-        self.spin_outline_width.setRange(0, 20)
+        self.spin_outline_width.setRange(0, 100)
         self.spin_outline_width.setValue(self.settings['outline_width'])
         self.spin_outline_width.valueChanged.connect(self._on_setting_changed)
 
@@ -207,7 +207,7 @@ class RenderSettingsDialog(QDialog):
 
         # 5. Size Property
         self.spin_font_size = QSpinBox()
-        self.spin_font_size.setRange(8, 200)
+        self.spin_font_size.setRange(8, 1000)
         self.spin_font_size.setValue(self.settings['font_size'])
         self.spin_font_size.valueChanged.connect(self._on_setting_changed)
         sub_form.addRow("크기:", self.spin_font_size)
@@ -228,7 +228,7 @@ class RenderSettingsDialog(QDialog):
 
         # 7. Margin
         self.spin_margin_v = QSpinBox()
-        self.spin_margin_v.setRange(0, 500)
+        self.spin_margin_v.setRange(0, 2000)
         self.spin_margin_v.setValue(self.settings['margin_v'])
         self.spin_margin_v.valueChanged.connect(self._on_setting_changed)
         sub_form.addRow("여백:", self.spin_margin_v)
