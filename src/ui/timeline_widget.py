@@ -619,6 +619,9 @@ class TimelineCanvas(QWidget):
         painter.setPen(QPen(QColor(255, 80, 80, 150), 1))
         painter.setBrush(QColor(255, 50, 50, 80))  # Semi-transparent red
         
+        # Epsilon for floating point comparison (1ms tolerance)
+        EPSILON = 0.001
+        
         for track, track_clips in tracks.items():
             if len(track_clips) < 2:
                 continue
@@ -632,9 +635,6 @@ class TimelineCanvas(QWidget):
             # Process END (-1) before START (1) to NOT count touching as overlap
             events.sort(key=lambda x: (x[0], x[1]))
             
-            # Process END (-1) before START (1) to NOT count touching as overlap
-            events.sort(key=lambda x: (x[0], x[1]))
-            
             active_count = 0
             last_time = None
             
@@ -643,7 +643,8 @@ class TimelineCanvas(QWidget):
                 time = events[idx][0]
                 
                 # If we were in an overlap state, draw the segment from last event to current event
-                if active_count >= 2 and last_time is not None and time > last_time:
+                # Only draw if the overlap region is larger than epsilon (avoid false positives from touching clips)
+                if active_count >= 2 and last_time is not None and (time - last_time) > EPSILON:
                     x = self.time_to_x(last_time)
                     # Subtract a tiny amount from width if we want a gap, 
                     # but usually just drawing two rounded rects at the same boundary
@@ -653,8 +654,9 @@ class TimelineCanvas(QWidget):
                     height = self.track_height
                     painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
                 
-                # Process all events at this exact timestamp to get net change
-                while idx < len(events) and events[idx][0] == time:
+                # Process all events at approximately the same timestamp (within epsilon) to get net change
+                # This groups events that should be at the same time but differ due to float precision
+                while idx < len(events) and abs(events[idx][0] - time) < EPSILON:
                     active_count += events[idx][1]
                     idx += 1
                 
