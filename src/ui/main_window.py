@@ -1759,35 +1759,30 @@ class MainWindow(QMainWindow):
         self.preview_widget.set_total_duration(total_duration)
     
     def _on_clip_moved(self, clip_id: str, new_start: float):
-        """Handle clip position change"""
+        """Handle clip position change - update ALL audio clips for ripple edit support"""
         self.statusBar().showMessage(f"클립 이동됨: {new_start:.2f}s")
-        
-        # Find the moved clip
-        clip = None
-        for c in self.timeline_widget.canvas.clips:
-            if c.id == clip_id:
-                clip = c
-                break
         
         # Sync to preview widget
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         
-        # Update AudioMixer for audio clips
-        if clip and clip.clip_type == "audio":
-            from .audio_mixer import ScheduledClip
-            speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
-            
-            scheduled_clip = ScheduledClip(
-                clip_id=clip.id,
-                speaker=clip.speaker,
-                timeline_start=clip.start,
-                timeline_end=clip.start + clip.duration,
-                source_offset=clip.offset,
-                source_path=speaker_audio_map.get(clip.speaker, ""),
-                duration=clip.duration
-            )
-            self.preview_widget.update_audio_clip(scheduled_clip)
+        # Update AudioMixer for ALL audio clips (required for ripple edit)
+        # Ripple edit moves multiple clips, so we need to update all audio clip positions
+        from .audio_mixer import ScheduledClip
+        speaker_audio_map = self.result_data.get('speaker_audio_map', {}) if self.result_data else self.speaker_audio_map
+        
+        for clip in self.timeline_widget.canvas.clips:
+            if clip.clip_type == "audio":
+                scheduled_clip = ScheduledClip(
+                    clip_id=clip.id,
+                    speaker=clip.speaker,
+                    timeline_start=clip.start,
+                    timeline_end=clip.start + clip.duration,
+                    source_offset=clip.offset,
+                    source_path=speaker_audio_map.get(clip.speaker, ""),
+                    duration=clip.duration
+                )
+                self.preview_widget.update_audio_clip(scheduled_clip)
             
         # Update total duration for ALL clip types
         all_clips = self.timeline_widget.canvas.clips
