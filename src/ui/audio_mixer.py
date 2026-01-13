@@ -60,6 +60,7 @@ class AudioMixer(QObject):
         self._duration: float = 0.0  # Total timeline duration
         self._playing: bool = False
         self._playback_rate: float = 1.0
+        self._volume: float = 1.0  # Volume level (0.0 to 1.0)
         
         # Active players for each clip currently playing
         self._active_players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
@@ -224,6 +225,18 @@ class AudioMixer(QObject):
         for clip_id, (player, _) in self._active_players.items():
             player.setPlaybackRate(rate)
             
+    def set_volume(self, volume: float):
+        """Set volume level.
+        
+        Args:
+            volume: Volume level (0.0 to 1.0)
+        """
+        self._volume = max(0.0, min(1.0, volume))
+        
+        # Update volume on all cached players
+        for speaker, (player, audio_output, _) in self._player_cache.items():
+            audio_output.setVolume(self._volume)
+            
     def _update_position(self):
         """Timer callback to update position and manage clips"""
         import time
@@ -299,7 +312,7 @@ class AudioMixer(QObject):
             
         # Create player and audio output
         audio_output = QAudioOutput()
-        audio_output.setVolume(1.0)
+        audio_output.setVolume(self._volume)
         
         player = QMediaPlayer()
         player.setAudioOutput(audio_output)

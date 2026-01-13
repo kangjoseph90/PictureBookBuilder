@@ -14,7 +14,8 @@ from PyQt6.QtWidgets import (
     QSlider, QStyle, QComboBox, QStyleOption
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics, QMouseEvent
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics, QMouseEvent, QIcon, QPolygonF, QBrush
+from PyQt6.QtCore import QPointF
 
 
 class ClickableSlider(QSlider):
@@ -256,32 +257,96 @@ class PreviewWidget(QWidget):
         
         layout.addWidget(self.image_label, 1)
         
-        # Time display
-        time_layout = QHBoxLayout()
-        self.time_label = QLabel("0:00 / 0:00")
-        self.time_label.setStyleSheet("font-family: monospace;")
-        time_layout.addWidget(self.time_label)
-        layout.addLayout(time_layout)
+        # Time and Status display row
+        time_status_layout = QHBoxLayout()
         
-        # Seek slider (clickable - allows clicking anywhere to jump)
+        self.time_label = QLabel("0:00 / 0:00")
+        self.time_label.setStyleSheet("font-family: monospace; font-size: 12px; color: #aaaaaa;")
+        time_status_layout.addWidget(self.time_label)
+        
+        time_status_layout.addStretch()
+        
+        self.status_label = QLabel("대기 중")
+        self.status_label.setStyleSheet("color: gray; font-size: 12px;")
+        time_status_layout.addWidget(self.status_label)
+        
+        layout.addLayout(time_status_layout)
+        
+        # Seek slider (clickable)
         self.seek_slider = ClickableSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.seek_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.seek_slider.sliderMoved.connect(self._on_seek)
         self.seek_slider.sliderPressed.connect(self._on_seek_start)
         self.seek_slider.sliderReleased.connect(self._on_seek_end)
         layout.addWidget(self.seek_slider)
         
-        # Playback controls
+        # Playback controls bar (Volume - Controls - Speed)
         controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 5, 0, 0)
         
-        self.status_label = QLabel("대기 중")
-        self.status_label.setStyleSheet("color: gray;")
-        self.status_label.setFixedWidth(60) # Fixed width to prevent shifting
-        controls_layout.addWidget(self.status_label)
+        # --- LEFT: Volume Control ---
+        volume_layout = QHBoxLayout()
+        volume_layout.setSpacing(2)
+        volume_layout.setContentsMargins(0, 0, 0, 0)
         
+        self.btn_mute = QPushButton()
+        self.btn_mute.setIcon(self._create_volume_icon(muted=False))
+        self.btn_mute.setToolTip("음소거")
+        self.btn_mute.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_mute.clicked.connect(self._toggle_mute)
+        self.btn_mute.setFixedSize(20, 20)
+        self.btn_mute.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+            }
+        """)
+        volume_layout.addWidget(self.btn_mute, 0, Qt.AlignmentFlag.AlignVCenter)
+        
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.volume_slider.setToolTip("음량 조절")
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        # Styled closer to modern media players
+        self.volume_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #333333;
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #888888;
+                width: 10px;
+                height: 10px;
+                margin: -3px 0;
+                border-radius: 5px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #bbbbbb;
+            }
+            QSlider::sub-page:horizontal {
+                background: #666666;
+                border-radius: 2px;
+            }
+        """)
+        volume_layout.addWidget(self.volume_slider)
+        
+        # Mute state tracking
+        self._pre_mute_volume = 100
+        self._is_muted = False
+        
+        controls_layout.addLayout(volume_layout)
+        
+        # Spacer
         controls_layout.addStretch()
         
+        # --- CENTER: Playback Buttons ---
         self.btn_start = QPushButton()
         self.btn_start.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.btn_start.setToolTip("맨 앞으로")
@@ -295,7 +360,7 @@ class PreviewWidget(QWidget):
         self.btn_play.setToolTip("재생/일시정지")
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_play.clicked.connect(self.toggle_playback)
-        self.btn_play.setFixedWidth(40) # Smaller as it's icon only
+        self.btn_play.setFixedWidth(40)
         controls_layout.addWidget(self.btn_play)
         
         self.btn_stop = QPushButton()
@@ -314,9 +379,10 @@ class PreviewWidget(QWidget):
         self.btn_end.setFixedWidth(40)
         controls_layout.addWidget(self.btn_end)
         
+        # Spacer
         controls_layout.addStretch()
         
-        # Speed control on the right
+        # --- RIGHT: Speed Control ---
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
         self.speed_combo.setCurrentIndex(2) # 1.0x
@@ -692,6 +758,85 @@ class PreviewWidget(QWidget):
             self.audio_mixer.set_playback_rate(speed)
         except ValueError:
             pass
+    
+    def _create_volume_icon(self, muted: bool = False) -> QIcon:
+        """Create a custom white volume icon for dark theme visibility"""
+        size = 16
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Subdued color for better integration
+        color = QColor("#888888")
+        painter.setPen(QPen(color, 1.5))
+        painter.setBrush(QBrush(color))
+        
+        # Draw speaker body (small trapezoid/rectangle)
+        speaker_body = QPolygonF([
+            QPointF(2, 6),
+            QPointF(5, 6),
+            QPointF(5, 10),
+            QPointF(2, 10),
+        ])
+        painter.drawPolygon(speaker_body)
+        
+        # Draw speaker cone (triangle)
+        speaker_cone = QPolygonF([
+            QPointF(5, 5),
+            QPointF(9, 2),
+            QPointF(9, 14),
+            QPointF(5, 11),
+        ])
+        painter.drawPolygon(speaker_cone)
+        
+        if muted:
+            # Draw X mark for muted - minimal grey design
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(10, 4, 15, 12)
+            painter.drawLine(15, 4, 10, 12)
+        else:
+            # Draw sound waves
+            painter.setPen(QPen(color, 1.2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            # Small wave
+            path1 = QPainterPath()
+            path1.moveTo(11, 6)
+            path1.quadTo(13, 8, 11, 10)
+            painter.drawPath(path1)
+            # Medium wave
+            path2 = QPainterPath()
+            path2.moveTo(13, 4)
+            path2.quadTo(16, 8, 13, 12)
+            painter.drawPath(path2)
+        
+        painter.end()
+        return QIcon(pixmap)
+    
+    def _on_volume_changed(self, value: int):
+        """Handle volume slider change"""
+        volume = value / 100.0
+        self.audio_mixer.set_volume(volume)
+        
+        # Update mute state and icon
+        if value == 0:
+            self._is_muted = True
+            self.btn_mute.setIcon(self._create_volume_icon(muted=True))
+        else:
+            self._is_muted = False
+            self._pre_mute_volume = value
+            self.btn_mute.setIcon(self._create_volume_icon(muted=False))
+    
+    def _toggle_mute(self):
+        """Toggle mute state"""
+        if self._is_muted:
+            # Unmute: restore previous volume
+            self.volume_slider.setValue(self._pre_mute_volume)
+        else:
+            # Mute: save current volume and set to 0
+            self._pre_mute_volume = self.volume_slider.value() if self.volume_slider.value() > 0 else 100
+            self.volume_slider.setValue(0)
     
     def _on_seek_start(self):
         """Called when user starts dragging the seek slider"""
