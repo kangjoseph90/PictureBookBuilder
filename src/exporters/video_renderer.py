@@ -81,6 +81,73 @@ class VideoRenderer:
         print("Using libx264 encoder")
         return ("libx264", ["-preset", "medium", "-threads", "0"])
 
+    def _run_ffmpeg_with_progress(
+        self, cmd: list[str], total_duration: float, start_pct: int, end_pct: int, label: str,
+        progress_callback=None, cancel_check=None
+    ) -> bool:
+        """Run FFmpeg command and report real-time progress to callback"""
+        if "-progress" not in cmd:
+            cmd.extend(["-progress", "pipe:1", "-nostats"])
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace"
+        )
+
+        output_q: queue.Queue = queue.Queue()
+        def reader():
+            try:
+                for line in proc.stdout:
+                    output_q.put(line)
+            except: pass
+            finally: output_q.put(None)
+        threading.Thread(target=reader, daemon=True).start()
+
+        total_us = int(total_duration * 1_000_000)
+        combined = []
+        cancelled = False
+
+        while True:
+            if cancel_check and cancel_check():
+                cancelled = True
+                proc.terminate()
+                try: proc.wait(timeout=5)
+                except: proc.kill()
+                break
+
+            try:
+                line = output_q.get(timeout=1)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+
+            if line is None:
+                break
+
+            combined.append(line)
+            m = re.match(r"out_time_ms=(\d+)", line.strip())
+            if m and total_us > 0 and progress_callback:
+                progress = int(m.group(1)) / total_us
+                pct = int(start_pct + progress * (end_pct - start_pct))
+                pct = max(start_pct, min(end_pct - 1, pct))
+                progress_callback(pct, label)
+
+            if line.strip() == "progress=end":
+                break
+
+        if cancelled:
+            return False
+
+        if proc.wait() != 0:
+            # Show last part of log on error
+            error_log = "".join(combined[-50:])
+            raise RuntimeError(f"{label} 실패 (Exit {proc.returncode}):\n{error_log}")
+
+        if progress_callback:
+            progress_callback(end_pct, label)
+        return True
+
     def _render_subtitle_png(self, text: str, settings: dict, width: int, height: int) -> str:
         s = settings or {}
         font_name = s.get('font_family', 'Malgun Gothic')
@@ -235,8 +302,6 @@ class VideoRenderer:
             # =================================================================
             # PHASE 1A: Create image video using concat demuxer
             # =================================================================
-            if progress_callback:
-                progress_callback(5, "이미지 비디오 생성 중...")
 
             # Black frame for gaps (use JPG to match image formats in concat)
             black_path = None
@@ -278,9 +343,10 @@ class VideoRenderer:
                 "-t", str(total_duration),  # Force exact duration
                 image_video
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode != 0:
-                raise RuntimeError(f"이미지 비디오 실패:\n{r.stderr}")
+            if not self._run_ffmpeg_with_progress(
+                cmd, total_duration, 5, 15, "이미지 비디오 생성 중...", 
+                progress_callback, cancel_check
+            ): return
 
             # =================================================================
             # PHASE 1B: Create subtitle video using concat demuxer
@@ -288,8 +354,6 @@ class VideoRenderer:
             if subtitles and settings and settings.get('subtitle_enabled', True):
                 if cancel_check and cancel_check():
                     return
-                if progress_callback:
-                    progress_callback(10, "자막 비디오 생성 중...")
 
                 valid_subs = [
                     SubtitleSegment((s.text or "").strip(), float(s.start_time), float(s.end_time))
@@ -354,9 +418,10 @@ class VideoRenderer:
                     "-t", str(total_duration),  # Force exact duration
                     subtitle_video
                 ]
-                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-                if r.returncode != 0:
-                    raise RuntimeError(f"자막 비디오 실패:\n{r.stderr}")
+                if not self._run_ffmpeg_with_progress(
+                    cmd, total_duration, 15, 25, "자막 비디오 생성 중...", 
+                    progress_callback, cancel_check
+                ): return
 
             # =================================================================
             # PHASE 2: Final composition with FFmpeg direct audio mixing
@@ -364,7 +429,7 @@ class VideoRenderer:
             if cancel_check and cancel_check():
                 return
             if progress_callback:
-                progress_callback(15, "최종 렌더링 준비 중...")
+                progress_callback(25, "최종 렌더링 준비 중...")
 
             # Build filter for audio mixing
             filter_lines = []
@@ -440,60 +505,10 @@ class VideoRenderer:
             ])
 
             # Execute
-            if progress_callback:
-                progress_callback(20, "렌더링 중...")
-
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace"
-            )
-
-            output_q: queue.Queue = queue.Queue()
-            def reader():
-                try:
-                    for line in proc.stdout:
-                        output_q.put(line)
-                except: pass
-                finally: output_q.put(None)
-            threading.Thread(target=reader, daemon=True).start()
-
-            total_us = int(total_duration * 1_000_000)
-            combined = []
-            cancelled = False
-
-            while True:
-                if cancel_check and cancel_check():
-                    cancelled = True
-                    proc.terminate()
-                    try: proc.wait(timeout=5)
-                    except: proc.kill()
-                    break
-
-                try:
-                    line = output_q.get(timeout=1)
-                except queue.Empty:
-                    if proc.poll() is not None:
-                        break
-                    continue
-
-                if line is None:
-                    break
-
-                combined.append(line)
-                m = re.match(r"out_time_ms=(\d+)", line.strip())
-                if m and total_us > 0:
-                    pct = int(min(99, 20 + (int(m.group(1)) / total_us) * 79))
-                    if progress_callback:
-                        progress_callback(pct, "렌더링 중...")
-
-                if line.strip() == "progress=end":
-                    break
-
-            if cancelled:
-                return
-
-            if proc.wait() != 0:
-                raise RuntimeError(f"FFmpeg 실패:\n{''.join(combined[-50:])}")
+            if not self._run_ffmpeg_with_progress(
+                cmd, total_duration, 30, 100, "렌더링 중...", 
+                progress_callback, cancel_check
+            ): return
 
             if progress_callback:
                 progress_callback(100, "완료")
