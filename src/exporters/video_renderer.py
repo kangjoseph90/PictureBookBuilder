@@ -273,7 +273,7 @@ class VideoRenderer:
                 "-f", "concat", "-safe", "0", "-i", concat_path,
                 "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
                        f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+                "-c:v", self._encoder_name, *self._encoder_opts,
                 "-pix_fmt", "yuv420p", "-r", str(self.fps),
                 "-t", str(total_duration),  # Force exact duration
                 image_video
@@ -433,7 +433,7 @@ class VideoRenderer:
                 "-filter_complex_script", filter_path,
                 "-map", "[vout]", "-map", "[aout]",
                 "-c:v", self._encoder_name, *self._encoder_opts,
-                "-crf", "23", "-pix_fmt", "yuv420p", "-r", str(self.fps),
+                "-pix_fmt", "yuv420p", "-r", str(self.fps),
                 "-c:a", "aac", "-movflags", "+faststart",
                 "-progress", "pipe:1", "-nostats",
                 str(output_path),
