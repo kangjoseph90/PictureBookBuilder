@@ -234,7 +234,7 @@ class StartScreen(QDialog):
             QListWidget::item {
                 background-color: transparent;
                 margin-bottom: 0px;
-                border-bottom: 1px solid #2D2D2D;  # Add separator line
+                border-bottom: 1px solid #2D2D2D;
             }
             QListWidget::item:hover {
                 background-color: #2A2D2E;
