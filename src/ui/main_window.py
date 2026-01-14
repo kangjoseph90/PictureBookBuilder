@@ -277,9 +277,9 @@ class ProcessingThread(QThread):
     progress = pyqtSignal(int, str)  # progress %, status message
     finished = pyqtSignal(bool, str, object)  # success, message, result data
     
-    def __init__(self, script_path: str, speaker_audio_map: dict, image_folder: str):
+    def __init__(self, script_content: str, speaker_audio_map: dict, image_folder: str):
         super().__init__()
-        self.script_path = script_path
+        self.script_content = script_content
         self.speaker_audio_map = speaker_audio_map  # Now directly passed
         self.image_folder = image_folder
         self._cancelled = False
@@ -310,7 +310,7 @@ class ProcessingThread(QThread):
             # Step 1: Parse script
             self.progress.emit(10, "스크립트 파싱 중...")
             parser = ScriptParser()
-            dialogues = parser.parse_file(self.script_path)
+            dialogues = parser.parse_text(self.script_content)
             speakers = parser.get_unique_speakers(dialogues)
             
             # Step 2: Validate speaker-audio mapping
@@ -797,11 +797,10 @@ class MainWindow(QMainWindow):
         script_group = QGroupBox("스크립트")
         script_layout = QVBoxLayout(script_group)
         script_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency 
-        # No local buttons anymore, functionality moved to Project menu
+
         self.script_text = QTextEdit()
         self.script_text.setReadOnly(True)
-        self.script_text.setPlaceholderText("여기를 클릭하여 스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
-        # Install event filter for click-to-load
+        self.script_text.setPlaceholderText("여기를 눌러 스크립트를 입력하거나 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
         self.script_text.viewport().installEventFilter(self)
         
         script_layout.addWidget(self.script_text)
@@ -966,8 +965,8 @@ class MainWindow(QMainWindow):
     def eventFilter(self, source, event):
         """Handle clicks on placeholders when empty"""
         if event.type() == QEvent.Type.MouseButtonRelease:
-            if source is self.script_text.viewport() and not self.script_path:
-                self._load_script()
+            if source is self.script_text.viewport():
+                self._open_script_editor()
                 return True
             elif source is self.image_list.viewport() and not self.image_folder:
                 self._load_image_folder()
@@ -1070,14 +1069,67 @@ class MainWindow(QMainWindow):
             self._check_ready()
             self.mark_modified()
     
+    def _open_script_editor(self):
+        """Open a larger dialog to edit the script"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("스크립트 편집")
+        dialog.resize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Text Editor
+        editor = QTextEdit()
+        editor.setPlainText(self.script_text.toPlainText())
+        # Set larger font for better visibility
+        font = editor.font()
+        font.setPointSize(12)
+        editor.setFont(font)
+        layout.addWidget(editor)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        load_btn = QPushButton("불러오기...")
+        def load_file_content():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "스크립트 파일 선택", "", "Text Files (*.txt);;All Files (*)"
+            )
+            if path:
+                self.script_path = path  # Update main window path tracking
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    editor.setPlainText(content)
+        load_btn.clicked.connect(load_file_content)
+
+        save_btn = QPushButton("저장")
+        save_btn.setDefault(True)
+        cancel_btn = QPushButton("취소")
+
+        save_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        btn_layout.addWidget(load_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_text = editor.toPlainText()
+            self.script_text.setPlainText(new_text)
+            self._detect_speakers()
+            self.statusBar().showMessage("스크립트가 업데이트되고 화자가 분석되었습니다.")
+            self._check_ready()
+
     def _detect_speakers(self):
         """Detect speakers from script and update mapping table"""
-        if not self.script_path:
+        text = self.script_text.toPlainText()
+        if not text.strip():
             return
         
         from core.script_parser import ScriptParser
         parser = ScriptParser()
-        dialogues = parser.parse_file(self.script_path)
+        dialogues = parser.parse_text(text)
         self.speakers = parser.get_unique_speakers(dialogues)
         
         # Update mapping table
@@ -1394,7 +1446,7 @@ class MainWindow(QMainWindow):
         """Check if we have all inputs to start processing"""
         # Need script and all speakers mapped
         all_mapped = all(self.speaker_audio_map.get(s) for s in self.speakers)
-        ready = bool(self.script_path and self.speakers and all_mapped)
+        ready = bool(self.script_text.toPlainText().strip() and self.speakers and all_mapped)
         self.action_process.setEnabled(ready)
     
     def _start_processing(self):
@@ -1405,7 +1457,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog = ProgressDialog(self, "오디오 처리 중...")
         
         self.processing_thread = ProcessingThread(
-            self.script_path,
+            self.script_text.toPlainText(),
             self.speaker_audio_map.copy(),
             self.image_folder or ""
         )
