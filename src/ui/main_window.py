@@ -3006,6 +3006,30 @@ class MainWindow(QMainWindow):
         subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
         audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
         
+        # Check for missing image files before rendering
+        missing_images = []
+        for clip in image_clips:
+            if clip.image_path and not Path(clip.image_path).exists():
+                missing_images.append(f"  - {Path(clip.image_path).name}")
+        
+        if missing_images:
+            unique_missing_images = list(set(missing_images))
+            warning_msg = "일부 이미지 파일을 찾을 수 없습니다:\n\n"
+            warning_msg += "🖼️ 누락된 이미지 파일:\n"
+            warning_msg += "\n".join(unique_missing_images[:5])  # Show first 5
+            if len(unique_missing_images) > 5:
+                warning_msg += f"\n  ... 외 {len(unique_missing_images) - 5}개"
+            warning_msg += "\n\n누락된 이미지는 검은 화면으로 렌더링됩니다.\n계속 진행하시겠습니까?"
+            
+            reply = QMessageBox.warning(
+                self, "이미지 파일 누락 경고", warning_msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.action_render.setEnabled(True)
+                self.statusBar().showMessage("렌더링이 취소되었습니다.")
+                return
+        
         # Filter subtitles if disabled in settings
         if not render_settings.get('subtitle_enabled', True):
             subtitle_clips = []
