@@ -1,3 +1,3 @@
-## 2024-05-23 - Infinite Thumbnail Cache
-**Learning:** The `ImageCache` class was storing all generated preview thumbnails (640x360) in an unbounded dictionary. For a project with thousands of images, this leads to GBs of memory usage (approx 1MB per image).
-**Action:** Implemented LRU eviction for preview thumbnails with a capacity limit. Always verify that caches have a bounded capacity or eviction policy, especially when dealing with image data in UI applications.
+## 2024-05-23 - Unbounded Waveform Cache
+**Learning:** The `TimelineCanvas` was storing generated waveform `QPainterPath` objects in an unbounded dictionary (`_waveform_path_cache`). Since the cache key depends on the zoom level (pixel width), zooming in and out created thousands of unique keys, causing unlimited memory growth.
+**Action:** Implemented LRU eviction for the waveform path cache using `OrderedDict` with a capacity limit (default 1000). This ensures memory stability during long editing sessions involving zooming, without impacting the smoothness of scrubbing (since visible clips are prioritized in the cache).
