@@ -2738,7 +2738,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"이미지가 변경되었습니다: {clip.name}")
     
     def _insert_image_at_clip(self, audio_clip):
-        """Insert a new image clip at the position of an audio clip"""
+        """Insert a new image clip at the position of an audio clip (스마트 삽입 v3)"""
         
         # Check if there's a selected image in the list
         selected_items = self.image_list.selectedItems()
@@ -2759,20 +2759,79 @@ class MainWindow(QMainWindow):
         if not image_path:
             return
         
-        # Find next audio clip to determine duration
+        # t = 오디오 클립 시작 시간
+        t = audio_clip.start
+        EPSILON = 1e-4
+        
+        # 이미지 클립들 수집
+        image_clips = sorted(
+            [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"],
+            key=lambda c: c.start
+        )
+        
+        # 오디오 클립들 수집 (duration 계산용)
         audio_clips = sorted(
             [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"],
             key=lambda c: c.start
         )
         
-        img_start = audio_clip.start
-        img_end = audio_clip.start + audio_clip.duration
+        modifications = []
         
-        for i, ac in enumerate(audio_clips):
-            if ac.id == audio_clip.id and i + 1 < len(audio_clips):
-                img_end = audio_clips[i + 1].start
+        # 1. 앞에 긴 클립이 t를 포함하는 경우 => 앞 클립 끝점을 t로 자름
+        # (t가 start보다 확실히 커야 함)
+        for clip in image_clips:
+            if clip.start < t - EPSILON and t < clip.start + clip.duration - EPSILON:
+                old_state = copy.deepcopy(clip)
+                clip.duration = t - clip.start
+                new_state = copy.deepcopy(clip)
+                modifications.append((clip.id, old_state, new_state))
                 break
         
+        # 2. 끝점 결정 알고리즘
+        # 기본 끝점: 다음 오디오 클립 시작점
+        next_audio_start = float('inf')
+        for ac in audio_clips:
+            if ac.start > t + EPSILON:
+                 next_audio_start = ac.start
+                 break
+        
+        if next_audio_start == float('inf'):
+             # 마지막 오디오 클립인 경우: 오디오 클립의 끝점을 목표로 함
+             next_audio_start = audio_clip.start + audio_clip.duration
+             
+        end_time = next_audio_start
+        
+        # 뒤의 이미지 클립들과의 간섭 고려
+        # t에서 1초 안에 시작하는 클립 -> (그 클립 끝점 + t) / 2
+        # 1초 밖에서 시작하는 클립 -> 그 클립 시작점
+        # 이 점들의 최솟값을 끝점으로 둔다.
+        
+        # 주의: 시작 시간이 t와 같은 클립도 포함해야 함 (>= t - EPSILON)
+        for clip in image_clips:
+            if clip.start > t - EPSILON: # t 이후(또는 같은) 시작
+                proposed_end = clip.start # 기본: 시작점
+                
+                # 1초 이내 시작 (시작 시간 일치 포함)
+                if clip.start - t <= 1.0 + EPSILON: 
+                    proposed_end = (clip.start + clip.duration + t) / 2
+                
+                if proposed_end < end_time:
+                    end_time = proposed_end
+        
+        # 3. 뒤의 클립들 겹치는 거 시작점을 이 끝판왕(end_time)으로 다 바꿈
+        for clip in image_clips:
+            # t 이후(또는 같은) 시작하고, end_time보다 먼저 시작하는 것들
+            if clip.start > t - EPSILON and clip.start < end_time - EPSILON:
+                 old_state = copy.deepcopy(clip)
+                 
+                 # 시작점 이동 (끝점은 유지 = duration 감소)
+                 original_end = clip.start + clip.duration
+                 clip.start = end_time
+                 clip.duration = max(0.1, original_end - end_time) # 최소 0.1s 보호
+                 
+                 new_state = copy.deepcopy(clip)
+                 modifications.append((clip.id, old_state, new_state))
+
         # Generate unique ID
         new_id = self._make_unique_clip_id(f"img_inserted_{len(audio_clips)}")
         
@@ -2780,8 +2839,8 @@ class MainWindow(QMainWindow):
         new_clip = TimelineClip(
             id=new_id,
             name=Path(image_path).name,
-            start=img_start,
-            duration=img_end - img_start,
+            start=t,
+            duration=end_time - t, # 계산된 끝점 사용
             track=2,
             color=QColor("#9E9E9E"),
             clip_type="image",
@@ -2789,17 +2848,37 @@ class MainWindow(QMainWindow):
             image_path=image_path
         )
         
-        # Undo command
-        cmd = AddRemoveClipsCommand(
+        # Undo commands (MacroCommand)
+        commands = []
+        
+        if modifications:
+            modify_cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                modifications,
+                description="기존 클립 경계 조정",
+                callback=None
+            )
+            commands.append(modify_cmd)
+        
+        add_cmd = AddRemoveClipsCommand(
             self.timeline_widget.canvas,
             added=[new_clip],
             removed=[],
             description=f"Insert image {new_clip.name}",
             callback=self._on_undo_redo_callback
         )
-        self.undo_stack.push(cmd)
-        cmd.redo()
-        self._update_undo_redo_actions()
+        commands.append(add_cmd)
+        
+        if len(commands) > 1:
+            macro_cmd = MacroCommand(
+                 commands,
+                 description=f"스마트 삽입: {new_clip.name}"
+            )
+            self.undo_stack.push(macro_cmd)
+            macro_cmd.redo()
+        else:
+            self.undo_stack.push(add_cmd)
+            add_cmd.redo()
 
         self.timeline_widget.canvas._update_total_duration()
         self.timeline_widget.canvas._background_dirty = True
@@ -2814,12 +2893,95 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.statusBar().showMessage(f"이미지가 삽입되었습니다: {new_clip.name}")
     
+    def _calculate_smart_image_position(self, drop_time: float, margin: float = 0.5):
+        """
+        스마트 이미지 삽입 위치와 duration 계산 (m, M 알고리즘)
+        
+        Args:
+            drop_time: 사용자가 원하는 드롭 시간 (t)
+            margin: 클립 간 최소 간격 (기본 0.5초, 각 클립 최소 0.25초 보장)
+            
+        Returns:
+            tuple: (adjusted_start, duration, clips_to_modify)
+        """
+        EPSILON = 1e-4
+        
+        # 이미지 클립들의 시작 시간 수집
+        image_clips = sorted(
+            [c for c in self.timeline_widget.canvas.clips if c.clip_type == "image"],
+            key=lambda c: c.start
+        )
+        image_starts = [c.start for c in image_clips]
+        
+        # 오디오 클립들 (duration 계산용)
+        audio_clips = sorted(
+            [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"],
+            key=lambda c: c.start
+        )
+        
+        t = drop_time
+        
+        # m = max(si + margin) for si < t (앞 클립들이 허용하는 최소 시작점)
+        # M = min(si - margin) for si > t (뒤 클립들이 허용하는 최대 시작점)
+        # EPSILON을 사용하여 경계값 처리 강화
+        m = max((si + margin for si in image_starts if si < t - EPSILON), default=0.0)
+        M = min((si - margin for si in image_starts if si > t + EPSILON), default=float('inf'))
+        
+        # 위치 결정
+        if m <= t + EPSILON and t <= M + EPSILON:
+            # 충분한 공간 - 원하는 위치 그대로
+            adjusted_start = t
+        elif m <= M < t: # 여유 공간이 있지만 t가 뒤에 있음 -> M으로 당김
+            # 뒤쪽에 막힘 - M으로 당김
+            adjusted_start = M
+        elif t < m <= M: # 여유 공간이 있지만 t가 앞에 있음 -> m으로 밀림
+            # 앞쪽에 막힘 - m으로 밀림
+            adjusted_start = m
+        else:  # m > M (완전히 끼인 경우 - start + margin > next_start - margin)
+            # 중앙값으로 삽입 (양쪽 클립 각각 최소 margin/2 = 0.25초 확보)
+            adjusted_start = (m + M) / 2
+        
+        # 음수 방지
+        adjusted_start = max(0.0, adjusted_start)
+        
+        # 겹치는 앞 클립 찾기 (경계 조정 필요)
+        clips_to_modify = []
+        for clip in image_clips:
+            # adjusted_start가 클립 범위 안에 있으면 자르기 (start < adj < end)
+            # 정확히는 adj가 start보다 커야 함.
+            if clip.start < adjusted_start - EPSILON and adjusted_start < clip.start + clip.duration - EPSILON:
+                clips_to_modify.append((clip, adjusted_start))
+                break
+        
+        # Duration 계산: 다음 이미지 클립 또는 다음 오디오 클립까지
+        next_image_start = min((si for si in image_starts if si > adjusted_start + EPSILON), default=float('inf'))
+        next_audio_start = min((c.start for c in audio_clips if c.start > adjusted_start + EPSILON), default=float('inf'))
+        end_limit = min(next_image_start, next_audio_start)
+        
+        if end_limit == float('inf'):
+            # 다음 클립이 없으면 현재 오디오 클립 끝까지 또는 기본 3초
+            for clip in audio_clips:
+                clip_end = clip.start + clip.duration
+                if clip.start <= adjusted_start + EPSILON and adjusted_start < clip_end:
+                    end_limit = clip_end
+                    break
+            if end_limit == float('inf'):
+                end_limit = adjusted_start + 3.0
+        
+        duration = max(margin / 2, end_limit - adjusted_start)  # 최소 margin/2 (0.25초)
+        
+        return adjusted_start, duration, clips_to_modify
+    
     def _on_image_dropped(self, image_path: str, drop_time: float):
-        """Handle image dropped onto timeline via drag and drop"""
+        """Handle image dropped onto timeline via drag and drop (스마트 삽입)"""
         from pathlib import Path
         
-        # Fixed duration for dropped images (3 seconds)
-        duration = 3.0
+        MIN_DURATION = 0.5  # 최소 클립 길이 (초)
+        
+        # 스마트 위치 계산
+        adjusted_start, duration, clips_to_modify = self._calculate_smart_image_position(
+            drop_time, MIN_DURATION
+        )
         
         # Generate unique ID
         base_id = f"img_dropped_{len([c for c in self.timeline_widget.canvas.clips if c.clip_type == 'image'])}"
@@ -2829,7 +2991,7 @@ class MainWindow(QMainWindow):
         new_clip = TimelineClip(
             id=new_id,
             name=Path(image_path).name,
-            start=drop_time,
+            start=adjusted_start,
             duration=duration,
             track=2,
             color=QColor("#9E9E9E"),
@@ -2838,17 +3000,46 @@ class MainWindow(QMainWindow):
             image_path=image_path
         )
         
-        # Undo command
-        from .undo_system import AddRemoveClipsCommand
-        cmd = AddRemoveClipsCommand(
+        # 기존 클립 경계 조정 (있는 경우)
+        modifications = []
+        for clip, new_end in clips_to_modify:
+            old_state = copy.deepcopy(clip)
+            clip.duration = new_end - clip.start
+            new_state = copy.deepcopy(clip)
+            modifications.append((clip.id, old_state, new_state))
+        
+        # Undo commands (MacroCommand로 묶기)
+        commands = []
+        
+        if modifications:
+            modify_cmd = ModifyClipsCommand(
+                self.timeline_widget.canvas,
+                modifications,
+                description="이미지 삽입을 위한 기존 클립 조정",
+                callback=None  # MacroCommand에서 처리
+            )
+            commands.append(modify_cmd)
+        
+        add_cmd = AddRemoveClipsCommand(
             self.timeline_widget.canvas,
             added=[new_clip],
             removed=[],
             description=f"드래그로 이미지 추가: {new_clip.name}",
-            callback=self._on_undo_redo_callback
+            callback=self._on_undo_redo_callback  # 마지막 command에 callback 설정
         )
-        self.undo_stack.push(cmd)
-        cmd.redo()
+        commands.append(add_cmd)
+        
+        if len(commands) > 1:
+            macro_cmd = MacroCommand(
+                commands,
+                description=f"스마트 이미지 삽입: {new_clip.name}"
+            )
+            self.undo_stack.push(macro_cmd)
+            macro_cmd.redo()
+        else:
+            self.undo_stack.push(add_cmd)
+            add_cmd.redo()
+        
         self._update_undo_redo_actions()
         
         self.timeline_widget.canvas._update_total_duration()
@@ -2862,7 +3053,12 @@ class MainWindow(QMainWindow):
             cache.prefetch_images([image_path])
         
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
-        self.statusBar().showMessage(f"이미지가 추가되었습니다: {new_clip.name}")
+        
+        # 상태 메시지
+        if adjusted_start != drop_time:
+            self.statusBar().showMessage(f"이미지가 {adjusted_start:.2f}초에 삽입되었습니다: {new_clip.name}")
+        else:
+            self.statusBar().showMessage(f"이미지가 추가되었습니다: {new_clip.name}")
 
     
     def _delete_clip(self, clip):
