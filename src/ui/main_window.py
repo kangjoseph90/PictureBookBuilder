@@ -1040,25 +1040,6 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(dialog)
 
-        # Toolbar
-        toolbar_layout = QHBoxLayout()
-        load_btn = QPushButton("파일에서 불러오기...")
-
-        def load_file_content():
-            path, _ = QFileDialog.getOpenFileName(
-                dialog, "스크립트 파일 선택", "", "Text Files (*.txt);;All Files (*)"
-            )
-            if path:
-                self.script_path = path  # Update main window path tracking
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    editor.setPlainText(content)
-
-        load_btn.clicked.connect(load_file_content)
-        toolbar_layout.addWidget(load_btn)
-        toolbar_layout.addStretch()
-        layout.addLayout(toolbar_layout)
-
         # Text Editor
         editor = QTextEdit()
         editor.setPlainText(self.script_text.toPlainText())
@@ -1068,20 +1049,29 @@ class MainWindow(QMainWindow):
         editor.setFont(font)
         layout.addWidget(editor)
 
-        # Info
-        info_label = QLabel("지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
-        info_label.setStyleSheet("color: gray;")
-        layout.addWidget(info_label)
-
         # Buttons
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("저장 및 분석")
+
+        load_btn = QPushButton("불러오기...")
+        def load_file_content():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "스크립트 파일 선택", "", "Text Files (*.txt);;All Files (*)"
+            )
+            if path:
+                self.script_path = path  # Update main window path tracking
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    editor.setPlainText(content)
+        load_btn.clicked.connect(load_file_content)
+
+        save_btn = QPushButton("저장")
         save_btn.setDefault(True)
         cancel_btn = QPushButton("취소")
 
         save_btn.clicked.connect(dialog.accept)
         cancel_btn.clicked.connect(dialog.reject)
 
+        btn_layout.addWidget(load_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(save_btn)
         btn_layout.addWidget(cancel_btn)
