@@ -549,11 +549,18 @@ class MainWindow(QMainWindow):
         # Undo system
         self.undo_stack = UndoStack()
 
+        # State management for non-undoable changes (e.g. script/audio mapping)
+        self._manual_modification_flag = False
+
         self._setup_menu_bar()
         self._setup_ui()
 
     def closeEvent(self, event):
         """Handle application close - cleanup resources"""
+        if not self._check_unsaved_changes():
+            event.ignore()
+            return
+
         # Stop any running background threads to prevent thread leaks
         if hasattr(self, 'processing_thread') and self.processing_thread is not None:
             if self.processing_thread.isRunning():
@@ -978,6 +985,35 @@ class MainWindow(QMainWindow):
         self.redo_action.setEnabled(self.undo_stack.can_redo())
         self.redo_action.setText(f"다시 실행({self.undo_stack.redo_stack[-1].text()})" if self.undo_stack.can_redo() else "다시 실행")
 
+        # Also update window title to show modified status
+        self._update_title()
+
+    def mark_modified(self):
+        """Mark the project as manually modified (for non-undoable actions)"""
+        self._manual_modification_flag = True
+        self._update_title()
+
+    def mark_clean(self):
+        """Mark the project as clean (saved)"""
+        self.undo_stack.set_clean()
+        self._manual_modification_flag = False
+        self._update_title()
+
+    def is_modified(self) -> bool:
+        """Check if project has unsaved changes"""
+        return (not self.undo_stack.is_clean()) or self._manual_modification_flag
+
+    def _update_title(self):
+        """Update window title with modified status"""
+        title = "PictureBookBuilder"
+        if self.project_path:
+            title += f" - {Path(self.project_path).name}"
+
+        if self.is_modified():
+            title += " *"
+
+        self.setWindowTitle(title)
+
     def _undo(self):
         """Undo last action"""
         if self.undo_stack.can_undo():
@@ -1032,6 +1068,7 @@ class MainWindow(QMainWindow):
             # Parse script to detect speakers
             self._detect_speakers()
             self._check_ready()
+            self.mark_modified()
     
     def _detect_speakers(self):
         """Detect speakers from script and update mapping table"""
@@ -1090,6 +1127,7 @@ class MainWindow(QMainWindow):
             # Check if all speakers have audio
             self._update_mapping_status()
             self._check_ready()
+            self.mark_modified()
     
     def _update_mapping_status(self):
         """Update the mapping info label based on current state"""
@@ -1116,6 +1154,8 @@ class MainWindow(QMainWindow):
             # If processing is already done, enable apply button
             if self.timeline_widget.canvas.clips:
                 self.action_apply_images.setEnabled(True)
+
+            self.mark_modified()
     
     def _reload_image_folder(self):
         """Reload images from the current image folder"""
@@ -3159,19 +3199,8 @@ class MainWindow(QMainWindow):
 
     def _new_project(self):
         """Create a new project"""
-        from PyQt6.QtWidgets import QMessageBox
-        
-        # Ask to save current project if modified
-        if self.timeline_widget.canvas.clips:
-            reply = QMessageBox.question(
-                self, "새 프로젝트",
-                "현재 프로젝트를 저장하시겠습니까?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                return
-            elif reply == QMessageBox.StandardButton.Yes:
-                self._save_project()
+        if not self._check_unsaved_changes():
+            return
         
         # Clear image cache to prevent stale data
         from .image_cache import get_image_cache
@@ -3189,6 +3218,7 @@ class MainWindow(QMainWindow):
         # Reset timeline
         self.timeline_widget.set_clips([])
         self.preview_widget.set_timeline_clips([])
+        self.undo_stack.clear()
         
         # Reset UI
         self.script_text.setPlainText("")
@@ -3211,11 +3241,15 @@ class MainWindow(QMainWindow):
         # Reset preview
         self.preview_widget.clear_preview()
         
+        self.mark_clean()
         self.setWindowTitle("PictureBookBuilder")
         self.statusBar().showMessage("새 프로젝트가 생성되었습니다.")
     
     def _open_project(self):
         """Open an existing project file"""
+        if not self._check_unsaved_changes():
+            return
+
         from PyQt6.QtWidgets import QFileDialog
         import json
         
@@ -3232,7 +3266,9 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             
             self._load_project_data(data)
+            self.undo_stack.clear()
             self.project_path = path
+            self.mark_clean()
             self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
             self.statusBar().showMessage(f"프로젝트를 불러왔습니다: {path}")
             
@@ -3240,15 +3276,15 @@ class MainWindow(QMainWindow):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "오류", f"프로젝트를 열 수 없습니다:\n{str(e)}")
     
-    def _save_project(self):
-        """Save current project"""
+    def _save_project(self) -> bool:
+        """Save current project. Returns True if saved or not needed, False if cancelled/failed."""
         if self.project_path:
-            self._save_to_file(self.project_path)
+            return self._save_to_file(self.project_path)
         else:
-            self._save_project_as()
+            return self._save_project_as()
     
-    def _save_project_as(self):
-        """Save project as a new file"""
+    def _save_project_as(self) -> bool:
+        """Save project as a new file. Returns True if saved, False if cancelled/failed."""
         path, _ = QFileDialog.getSaveFileName(
             self, "프로젝트 저장", "", "PictureBookBuilder Files (*.pbb);;All Files (*)"
         )
@@ -3256,18 +3292,39 @@ class MainWindow(QMainWindow):
             if not path.endswith('.pbb'):
                 path += '.pbb'
             self.project_path = path
-            self._save_to_file(path)
-            self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
+            if self._save_to_file(path):
+                self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
+                return True
+        return False
             
     def _show_settings(self):
         """Show the settings dialog"""
         dialog = SettingsDialog(self)
         dialog.set_config(self.runtime_config)
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.mark_modified()
 
     
-    def _save_to_file(self, path: str):
-        """Save project data to file"""
+    def _check_unsaved_changes(self) -> bool:
+        """Check for unsaved changes. Returns True if safe to proceed, False if cancelled."""
+        if not self.is_modified():
+            return True
+
+        reply = QMessageBox.question(
+            self, "저장되지 않은 변경사항",
+            "현재 프로젝트가 변경되었습니다. 저장하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            return self._save_project()
+        elif reply == QMessageBox.StandardButton.No:
+            return True
+        else: # Cancel
+            return False
+
+    def _save_to_file(self, path: str) -> bool:
+        """Save project data to file. Returns True on success."""
         import json
         from datetime import datetime
         
@@ -3320,9 +3377,11 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(project_data, f, ensure_ascii=False, indent=2)
             self.statusBar().showMessage(f"프로젝트가 저장되었습니다: {path}")
+            self.mark_clean()
+            return True
         except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "오류", f"프로젝트를 저장할 수 없습니다:\n{str(e)}")
+            return False
     
     def _load_project_data(self, data: dict):
         """Load project data from dictionary"""

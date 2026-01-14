@@ -19,6 +19,7 @@ class UndoStack:
         self.undo_stack: List[Command] = []
         self.redo_stack: List[Command] = []
         self.max_stack_size = 100
+        self.clean_command: Optional[Command] = None
 
     def push(self, cmd: Command):
         self.undo_stack.append(cmd)
@@ -48,9 +49,19 @@ class UndoStack:
     def can_redo(self) -> bool:
         return len(self.redo_stack) > 0
 
+    def set_clean(self):
+        """Mark the current state as clean"""
+        self.clean_command = self.undo_stack[-1] if self.undo_stack else None
+
+    def is_clean(self) -> bool:
+        """Check if the current state is clean"""
+        current_command = self.undo_stack[-1] if self.undo_stack else None
+        return current_command is self.clean_command
+
     def clear(self):
         self.undo_stack.clear()
         self.redo_stack.clear()
+        self.clean_command = None
 
 class MacroCommand(Command):
     """Command that executes multiple commands together"""
