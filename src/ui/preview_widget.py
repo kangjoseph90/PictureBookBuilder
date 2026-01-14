@@ -11,7 +11,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QStyle, QComboBox, QStyleOption
+    QSlider, QStyle, QComboBox, QStyleOption, QStyleOptionSlider
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics, QMouseEvent, QIcon, QPolygonF, QBrush
@@ -24,14 +24,34 @@ class ClickableSlider(QSlider):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             # Calculate the value based on click position
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            sr = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self)
+            
             if self.orientation() == Qt.Orientation.Horizontal:
-                value = self.minimum() + (self.maximum() - self.minimum()) * event.position().x() / self.width()
+                half_handle_width = (sr.width() / 2) if not sr.isEmpty() else 0
+                available_width = self.width() - sr.width()
+                if available_width > 0:
+                    pos = event.position().x() - half_handle_width
+                    # Clamp position
+                    pos = max(0, min(pos, available_width))
+                    value = self.minimum() + (pos / available_width) * (self.maximum() - self.minimum())
+                else:
+                    value = self.minimum()
             else:
-                value = self.minimum() + (self.maximum() - self.minimum()) * (self.height() - event.position().y()) / self.height()
+                half_handle_height = (sr.height() / 2) if not sr.isEmpty() else 0
+                available_height = self.height() - sr.height()
+                if available_height > 0:
+                    pos = (self.height() - event.position().y()) - half_handle_height
+                    # Clamp position
+                    pos = max(0, min(pos, available_height))
+                    value = self.minimum() + (pos / available_height) * (self.maximum() - self.minimum())
+                else:
+                    value = self.minimum()
             
             self.setValue(int(value))
             self.sliderMoved.emit(int(value))
-            event.accept()
+            # No event.accept() here to let QSlider handle the click-and-drag normally
         super().mousePressEvent(event)
 
 from .image_cache import get_image_cache
@@ -305,7 +325,7 @@ class PreviewWidget(QWidget):
         """)
         volume_layout.addWidget(self.btn_mute, 0, Qt.AlignmentFlag.AlignVCenter)
         
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider = ClickableSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
         self.volume_slider.setFixedWidth(80)
@@ -313,6 +333,7 @@ class PreviewWidget(QWidget):
         self.volume_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.volume_slider.setToolTip("음량 조절")
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        self.volume_slider.sliderMoved.connect(self._on_volume_changed)
         # Styled closer to modern media players
         self.volume_slider.setStyleSheet("""
             QSlider::groove:horizontal {
