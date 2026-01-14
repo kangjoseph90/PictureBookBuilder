@@ -792,27 +792,11 @@ class MainWindow(QMainWindow):
         script_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency 
 
         self.script_text = QTextEdit()
-        self.script_text.setPlaceholderText("직접 입력하거나 스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
+        self.script_text.setReadOnly(True)
+        self.script_text.setPlaceholderText("여기를 눌러 스크립트를 입력하거나 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
+        self.script_text.viewport().installEventFilter(self)
         
         script_layout.addWidget(self.script_text)
-
-        # Script Actions
-        script_btn_layout = QHBoxLayout()
-        script_btn_layout.setContentsMargins(0, 0, 0, 0)
-
-        btn_refresh = QPushButton("화자 분석")
-        btn_refresh.setToolTip("입력한 스크립트를 분석하여 화자 목록을 갱신합니다.")
-        btn_refresh.clicked.connect(self._detect_speakers)
-
-        btn_editor = QPushButton("편집기 열기")
-        btn_editor.setToolTip("더 큰 화면에서 스크립트를 편집합니다.")
-        btn_editor.clicked.connect(self._open_script_editor)
-
-        script_btn_layout.addWidget(btn_refresh)
-        script_btn_layout.addWidget(btn_editor)
-
-        script_layout.addLayout(script_btn_layout)
-
         splitter.addWidget(script_group)
         
         # --- 2. Speaker Mapping Section ---
@@ -974,8 +958,10 @@ class MainWindow(QMainWindow):
     def eventFilter(self, source, event):
         """Handle clicks on placeholders when empty"""
         if event.type() == QEvent.Type.MouseButtonRelease:
-            # Script text click-to-load removed to allow direct input
-            if source is self.image_list.viewport() and not self.image_folder:
+            if source is self.script_text.viewport():
+                self._open_script_editor()
+                return True
+            elif source is self.image_list.viewport() and not self.image_folder:
                 self._load_image_folder()
                 return True
         return super().eventFilter(source, event)
@@ -1054,6 +1040,25 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(dialog)
 
+        # Toolbar
+        toolbar_layout = QHBoxLayout()
+        load_btn = QPushButton("파일에서 불러오기...")
+
+        def load_file_content():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "스크립트 파일 선택", "", "Text Files (*.txt);;All Files (*)"
+            )
+            if path:
+                self.script_path = path  # Update main window path tracking
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    editor.setPlainText(content)
+
+        load_btn.clicked.connect(load_file_content)
+        toolbar_layout.addWidget(load_btn)
+        toolbar_layout.addStretch()
+        layout.addLayout(toolbar_layout)
+
         # Text Editor
         editor = QTextEdit()
         editor.setPlainText(self.script_text.toPlainText())
@@ -1070,7 +1075,8 @@ class MainWindow(QMainWindow):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("저장 및 닫기")
+        save_btn = QPushButton("저장 및 분석")
+        save_btn.setDefault(True)
         cancel_btn = QPushButton("취소")
 
         save_btn.clicked.connect(dialog.accept)
@@ -1085,7 +1091,8 @@ class MainWindow(QMainWindow):
             new_text = editor.toPlainText()
             self.script_text.setPlainText(new_text)
             self._detect_speakers()
-            self.statusBar().showMessage("스크립트가 업데이트되었습니다.")
+            self.statusBar().showMessage("스크립트가 업데이트되고 화자가 분석되었습니다.")
+            self._check_ready()
 
     def _detect_speakers(self):
         """Detect speakers from script and update mapping table"""
