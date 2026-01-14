@@ -27,6 +27,7 @@ from .preview_widget import PreviewWidget
 from .settings_widget import SettingsWidget, SettingsDialog
 from .render_settings_dialog import RenderSettingsDialog
 from .theme import ModernDarkTheme
+from .recent_projects import get_recent_projects_manager
 from config import DEFAULT_GAP_SECONDS
 from runtime_config import get_config, set_config, RuntimeConfig
 
@@ -3324,8 +3325,36 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
             self.statusBar().showMessage(f"프로젝트를 불러왔습니다: {path}")
             
+            # Add to recent projects
+            get_recent_projects_manager().add_project(path, Path(path).stem)
+            
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "오류", f"프로젝트를 열 수 없습니다:\n{str(e)}")
+    
+    def open_project_file(self, path: str):
+        """Open a project file from external caller (e.g., start screen)"""
+        import json
+        
+        if not Path(path).exists():
+            QMessageBox.critical(self, "오류", f"파일을 찾을 수 없습니다:\n{path}")
+            return
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            self._load_project_data(data)
+            self.undo_stack.clear()
+            self.project_path = path
+            self.mark_clean()
+            self.setWindowTitle(f"PictureBookBuilder - {Path(path).name}")
+            self.statusBar().showMessage(f"프로젝트를 불러왔습니다: {path}")
+            
+            # Add to recent projects
+            get_recent_projects_manager().add_project(path, Path(path).stem)
+            
+        except Exception as e:
             QMessageBox.critical(self, "오류", f"프로젝트를 열 수 없습니다:\n{str(e)}")
     
     def _save_project(self) -> bool:
@@ -3430,6 +3459,9 @@ class MainWindow(QMainWindow):
                 json.dump(project_data, f, ensure_ascii=False, indent=2)
             self.statusBar().showMessage(f"프로젝트가 저장되었습니다: {path}")
             self.mark_clean()
+            
+            # Add to recent projects
+            get_recent_projects_manager().add_project(path, Path(path).stem)
             return True
         except Exception as e:
             QMessageBox.critical(self, "오류", f"프로젝트를 저장할 수 없습니다:\n{str(e)}")
