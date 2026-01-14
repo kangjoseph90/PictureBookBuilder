@@ -37,13 +37,14 @@ class ImageCache(QObject):
     # args: path, original_qimage, small_qimage, timeline_qimage, preview_qimage
     _image_processed = pyqtSignal(str, QImage, QImage, QImage, QImage)
     
-    def __init__(self, max_workers: int = 4, capacity: int = 20):
+    def __init__(self, max_workers: int = 4, capacity: int = 20, capacity_preview: int = 200):
         super().__init__()
         self._originals: OrderedDict[str, QPixmap] = OrderedDict()  # path -> original pixmap (LRU)
         self._capacity = capacity
         self._thumbnails_small: dict[str, QPixmap] = {}  # path -> 48x48 thumbnail
         self._thumbnails_timeline: dict[str, QPixmap] = {}  # path -> timeline thumbnail
-        self._thumbnails_preview: dict[str, QPixmap] = {}  # path -> 640x360 preview thumbnail
+        self._thumbnails_preview: OrderedDict[str, QPixmap] = OrderedDict()  # path -> 640x360 preview thumbnail (LRU)
+        self._capacity_preview = capacity_preview
         self._lock = threading.Lock()
         self._pending: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -152,7 +153,13 @@ class ImageCache(QObject):
         """Enforce LRU capacity on originals"""
         while len(self._originals) > self._capacity:
             path, _ = self._originals.popitem(last=False)  # Pop oldest (first) item
-            #print(f"[Cache] Evicted: {Path(path).name}")
+            #print(f"[Cache] Evicted Original: {Path(path).name}")
+
+    def _enforce_capacity_preview(self):
+        """Enforce LRU capacity on preview thumbnails"""
+        while len(self._thumbnails_preview) > self._capacity_preview:
+            path, _ = self._thumbnails_preview.popitem(last=False)  # Pop oldest (first) item
+            #print(f"[Cache] Evicted Preview: {Path(path).name}")
 
     def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage, preview: QImage):
         """Handle processed images on the main thread"""
@@ -176,7 +183,11 @@ class ImageCache(QObject):
 
                 self._thumbnails_small[path] = pix_small
                 self._thumbnails_timeline[path] = pix_timeline
+
                 self._thumbnails_preview[path] = pix_preview
+                self._thumbnails_preview.move_to_end(path)
+                self._enforce_capacity_preview()
+
                 self._pending.discard(path)
             
             self.image_loaded.emit(path)
@@ -209,7 +220,10 @@ class ImageCache(QObject):
     def get_thumbnail_preview(self, path: str) -> Optional[QPixmap]:
         """Get medium-res preview thumbnail (640x360)"""
         with self._lock:
-            return self._thumbnails_preview.get(path)
+            if path in self._thumbnails_preview:
+                self._thumbnails_preview.move_to_end(path)
+                return self._thumbnails_preview[path]
+            return None
     
     def has_original(self, path: str) -> bool:
         """Check if the full original image is in cache"""
