@@ -277,9 +277,9 @@ class ProcessingThread(QThread):
     progress = pyqtSignal(int, str)  # progress %, status message
     finished = pyqtSignal(bool, str, object)  # success, message, result data
     
-    def __init__(self, script_path: str, speaker_audio_map: dict, image_folder: str):
+    def __init__(self, script_content: str, speaker_audio_map: dict, image_folder: str):
         super().__init__()
-        self.script_path = script_path
+        self.script_content = script_content
         self.speaker_audio_map = speaker_audio_map  # Now directly passed
         self.image_folder = image_folder
         self._cancelled = False
@@ -310,7 +310,7 @@ class ProcessingThread(QThread):
             # Step 1: Parse script
             self.progress.emit(10, "스크립트 파싱 중...")
             parser = ScriptParser()
-            dialogues = parser.parse_file(self.script_path)
+            dialogues = parser.parse_text(self.script_content)
             speakers = parser.get_unique_speakers(dialogues)
             
             # Step 2: Validate speaker-audio mapping
@@ -790,14 +790,29 @@ class MainWindow(QMainWindow):
         script_group = QGroupBox("스크립트")
         script_layout = QVBoxLayout(script_group)
         script_layout.setContentsMargins(10, 15, 10, 10) # Increased margins for consistency 
-        # No local buttons anymore, functionality moved to Project menu
+
         self.script_text = QTextEdit()
-        self.script_text.setReadOnly(True)
-        self.script_text.setPlaceholderText("여기를 클릭하여 스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
-        # Install event filter for click-to-load
-        self.script_text.viewport().installEventFilter(self)
+        self.script_text.setPlaceholderText("직접 입력하거나 스크립트 파일을 불러오세요...\n\n지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
         
         script_layout.addWidget(self.script_text)
+
+        # Script Actions
+        script_btn_layout = QHBoxLayout()
+        script_btn_layout.setContentsMargins(0, 0, 0, 0)
+
+        btn_refresh = QPushButton("화자 분석")
+        btn_refresh.setToolTip("입력한 스크립트를 분석하여 화자 목록을 갱신합니다.")
+        btn_refresh.clicked.connect(self._detect_speakers)
+
+        btn_editor = QPushButton("편집기 열기")
+        btn_editor.setToolTip("더 큰 화면에서 스크립트를 편집합니다.")
+        btn_editor.clicked.connect(self._open_script_editor)
+
+        script_btn_layout.addWidget(btn_refresh)
+        script_btn_layout.addWidget(btn_editor)
+
+        script_layout.addLayout(script_btn_layout)
+
         splitter.addWidget(script_group)
         
         # --- 2. Speaker Mapping Section ---
@@ -959,10 +974,8 @@ class MainWindow(QMainWindow):
     def eventFilter(self, source, event):
         """Handle clicks on placeholders when empty"""
         if event.type() == QEvent.Type.MouseButtonRelease:
-            if source is self.script_text.viewport() and not self.script_path:
-                self._load_script()
-                return True
-            elif source is self.image_list.viewport() and not self.image_folder:
+            # Script text click-to-load removed to allow direct input
+            if source is self.image_list.viewport() and not self.image_folder:
                 self._load_image_folder()
                 return True
         return super().eventFilter(source, event)
@@ -1033,14 +1046,56 @@ class MainWindow(QMainWindow):
             self._detect_speakers()
             self._check_ready()
     
+    def _open_script_editor(self):
+        """Open a larger dialog to edit the script"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("스크립트 편집")
+        dialog.resize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Text Editor
+        editor = QTextEdit()
+        editor.setPlainText(self.script_text.toPlainText())
+        # Set larger font for better visibility
+        font = editor.font()
+        font.setPointSize(12)
+        editor.setFont(font)
+        layout.addWidget(editor)
+
+        # Info
+        info_label = QLabel("지원 형식:\n* 화자: 대사\n- 화자: 대사\n화자: 대사")
+        info_label.setStyleSheet("color: gray;")
+        layout.addWidget(info_label)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("저장 및 닫기")
+        cancel_btn = QPushButton("취소")
+
+        save_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_text = editor.toPlainText()
+            self.script_text.setPlainText(new_text)
+            self._detect_speakers()
+            self.statusBar().showMessage("스크립트가 업데이트되었습니다.")
+
     def _detect_speakers(self):
         """Detect speakers from script and update mapping table"""
-        if not self.script_path:
+        text = self.script_text.toPlainText()
+        if not text.strip():
             return
         
         from core.script_parser import ScriptParser
         parser = ScriptParser()
-        dialogues = parser.parse_file(self.script_path)
+        dialogues = parser.parse_text(text)
         self.speakers = parser.get_unique_speakers(dialogues)
         
         # Update mapping table
@@ -1354,7 +1409,7 @@ class MainWindow(QMainWindow):
         """Check if we have all inputs to start processing"""
         # Need script and all speakers mapped
         all_mapped = all(self.speaker_audio_map.get(s) for s in self.speakers)
-        ready = bool(self.script_path and self.speakers and all_mapped)
+        ready = bool(self.script_text.toPlainText().strip() and self.speakers and all_mapped)
         self.action_process.setEnabled(ready)
     
     def _start_processing(self):
@@ -1365,7 +1420,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog = ProgressDialog(self, "오디오 처리 중...")
         
         self.processing_thread = ProcessingThread(
-            self.script_path,
+            self.script_text.toPlainText(),
             self.speaker_audio_map.copy(),
             self.image_folder or ""
         )
