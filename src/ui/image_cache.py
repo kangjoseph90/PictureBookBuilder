@@ -4,14 +4,13 @@ Image Cache - Simplified single-source cache
 Loads original images once and generates thumbnails upfront.
 All components share the same cache.
 """
-from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal, QSize, Qt
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QImageReader, QImageIOHandler
 
 
 # Standard thumbnail sizes
@@ -97,24 +96,47 @@ class ImageCache(QObject):
             return
             
         try:
-            # Load original (QImage is thread-safe)
-            image = QImage(path)
-            if image.isNull():
-                with self._lock:
-                    self._pending.discard(path)
-                return
+            image = QImage()
+            thumb_preview = QImage()
+
+            # Optimized loading path
+            if not load_original:
+                # Try to use QImageReader for faster scaled loading
+                reader = QImageReader(path)
+                if reader.supportsOption(
+                    QImageIOHandler.ImageOption.ScaledSize
+                ):
+                    size = reader.size()
+                    if size.isValid():
+                        # Calculate scaled size to preserve aspect ratio
+                        new_size = size.scaled(
+                            THUMBNAIL_SIZE_PREVIEW,
+                            Qt.AspectRatioMode.KeepAspectRatio
+                        )
+                        reader.setScaledSize(new_size)
+                        thumb_preview = reader.read()
+
+            # Fallback to standard loading if:
+            # 1. load_original is True (need full res)
+            # 2. Optimization failed (thumb_preview is null)
+            if load_original or thumb_preview.isNull():
+                image = QImage(path)
+                if image.isNull():
+                    with self._lock:
+                        self._pending.discard(path)
+                    return
+
+                # Generate preview thumbnail from full image
+                thumb_preview = image.scaled(
+                    THUMBNAIL_SIZE_PREVIEW,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
             
             if not self._is_running:
                 return
 
             # Generate thumbnails (Cascaded scaling for performance)
-            # 1. Largest thumbnail (Preview) from original
-            thumb_preview = image.scaled(
-                THUMBNAIL_SIZE_PREVIEW,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-
             # 2. Timeline thumbnail from Preview (faster than from original)
             thumb_timeline = thumb_preview.scaled(
                 THUMBNAIL_SIZE_TIMELINE,
