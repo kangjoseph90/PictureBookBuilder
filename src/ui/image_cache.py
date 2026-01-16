@@ -11,7 +11,7 @@ from collections import OrderedDict
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal, QSize, Qt
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QImageReader
 
 
 # Standard thumbnail sizes
@@ -97,8 +97,21 @@ class ImageCache(QObject):
             return
             
         try:
-            # Load original (QImage is thread-safe)
-            image = QImage(path)
+            image = None
+
+            # Optimization: Use QImageReader to load scaled image directly if full res is not needed
+            if not load_original:
+                reader = QImageReader(path)
+                orig_size = reader.size()
+                if orig_size.isValid():
+                    scaled_size = orig_size.scaled(THUMBNAIL_SIZE_PREVIEW, Qt.AspectRatioMode.KeepAspectRatio)
+                    reader.setScaledSize(scaled_size)
+                    image = reader.read()
+
+            # Fallback or full load
+            if image is None or image.isNull():
+                image = QImage(path)
+
             if image.isNull():
                 with self._lock:
                     self._pending.discard(path)
@@ -109,6 +122,7 @@ class ImageCache(QObject):
 
             # Generate thumbnails (Cascaded scaling for performance)
             # 1. Largest thumbnail (Preview) from original
+            # If image was loaded via QImageReader scaled, this is a no-op or cheap resize
             thumb_preview = image.scaled(
                 THUMBNAIL_SIZE_PREVIEW,
                 Qt.AspectRatioMode.KeepAspectRatio,
