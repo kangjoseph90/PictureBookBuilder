@@ -16,8 +16,7 @@ from PyQt6.QtGui import QPixmap, QImage, QImageReader, QImageIOHandler
 # Standard thumbnail sizes
 THUMBNAIL_SIZE_SMALL = QSize(48, 48)   # For image list
 THUMBNAIL_SIZE_TIMELINE = QSize(120, 60)  # For timeline
-# For fast scrubbing (640x360 is ~0.23MP)
-THUMBNAIL_SIZE_PREVIEW = QSize(640, 360)
+THUMBNAIL_SIZE_PREVIEW = QSize(640, 360)  # For fast scrubbing (640x360 is ~0.23MP)
 
 
 class ImageCache(QObject):
@@ -34,21 +33,16 @@ class ImageCache(QObject):
     # Signal when an image is fully loaded (path)
     image_loaded = pyqtSignal(str)
 
-    # args: path, original_qimage, small_qimage, timeline_qimage,
-    # preview_qimage
+    # args: path, original_qimage, small_qimage, timeline_qimage, preview_qimage
     _image_processed = pyqtSignal(str, QImage, QImage, QImage, QImage)
 
     def __init__(self, max_workers: int = 4, capacity: int = 20):
         super().__init__()
-        # path -> original pixmap (LRU)
-        self._originals: OrderedDict[str, QPixmap] = OrderedDict()
+        self._originals: OrderedDict[str, QPixmap] = OrderedDict()  # path -> original pixmap (LRU)
         self._capacity = capacity
-        # path -> 48x48 thumbnail
-        self._thumbnails_small: dict[str, QPixmap] = {}
-        # path -> timeline thumbnail
-        self._thumbnails_timeline: dict[str, QPixmap] = {}
-        # path -> 640x360 preview thumbnail
-        self._thumbnails_preview: dict[str, QPixmap] = {}
+        self._thumbnails_small: dict[str, QPixmap] = {}  # path -> 48x48 thumbnail
+        self._thumbnails_timeline: dict[str, QPixmap] = {}  # path -> timeline thumbnail
+        self._thumbnails_preview: dict[str, QPixmap] = {}  # path -> 640x360 preview thumbnail
         self._lock = threading.Lock()
         self._pending: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -96,20 +90,11 @@ class ImageCache(QObject):
 
                 self._pending.add(path)
 
-            # If load_original is True and thumbnails_exist is True, we only
-            # need to load original
+            # If load_original is True and thumbnails_exist is True, we only need to load original
             skip_thumbnails = load_original and thumbnails_exist
-            self._executor.submit(
-                self._load_image,
-                path,
-                load_original,
-                skip_thumbnails)
+            self._executor.submit(self._load_image, path, load_original, skip_thumbnails)
 
-    def _load_image(
-            self,
-            path: str,
-            load_original: bool,
-            skip_thumbnails: bool = False):
+    def _load_image(self, path: str, load_original: bool, skip_thumbnails: bool = False):
         """Load image and generate thumbnails in background"""
         if not self._is_running:
             return
@@ -138,8 +123,7 @@ class ImageCache(QObject):
             # Fallback to standard loading if:
             # 1. load_original is True (need full res)
             # 2. Optimization failed (thumb_preview is null)
-            if load_original or (
-                    thumb_preview.isNull() and not skip_thumbnails):
+            if load_original or (thumb_preview.isNull() and not skip_thumbnails):
                 image = QImage(path)
                 if image.isNull():
                     with self._lock:
@@ -162,8 +146,7 @@ class ImageCache(QObject):
             thumb_small = QImage()
 
             if not skip_thumbnails and not thumb_preview.isNull():
-                # 2. Timeline thumbnail from Preview (faster than from
-                # original)
+                # 2. Timeline thumbnail from Preview (faster than from original)
                 thumb_timeline = thumb_preview.scaled(
                     THUMBNAIL_SIZE_TIMELINE,
                     Qt.AspectRatioMode.KeepAspectRatio,
@@ -185,12 +168,7 @@ class ImageCache(QObject):
             final_original = image if load_original else QImage()
 
             try:
-                self._image_processed.emit(
-                    path,
-                    final_original,
-                    thumb_small,
-                    thumb_timeline,
-                    thumb_preview)
+                self._image_processed.emit(path, final_original, thumb_small, thumb_timeline, thumb_preview)
             except RuntimeError:
                 pass
 
@@ -204,38 +182,27 @@ class ImageCache(QObject):
     def _enforce_capacity(self):
         """Enforce LRU capacity on originals"""
         while len(self._originals) > self._capacity:
-            path, _ = self._originals.popitem(
-                last=False)  # Pop oldest (first) item
-            # print(f"[Cache] Evicted: {Path(path).name}")
+            path, _ = self._originals.popitem(last=False)  # Pop oldest (first) item
+            #print(f"[Cache] Evicted: {Path(path).name}")
 
-    def _on_image_processed(
-            self,
-            path: str,
-            original: QImage,
-            small: QImage,
-            timeline: QImage,
-            preview: QImage):
+    def _on_image_processed(self, path: str, original: QImage, small: QImage, timeline: QImage, preview: QImage):
         """Handle processed images on the main thread"""
         if not self._is_running:
             return
 
         try:
             # Convert to QPixmap (Must be done on main thread)
-            # Only create pixmap if original is valid (it might be null if we
-            # only wanted thumbnails)
-            pix_original = QPixmap.fromImage(
-                original) if not original.isNull() else None
-            pix_small = QPixmap.fromImage(
-                small) if not small.isNull() else None
-            pix_timeline = QPixmap.fromImage(
-                timeline) if not timeline.isNull() else None
-            pix_preview = QPixmap.fromImage(
-                preview) if not preview.isNull() else None
+            # Only create pixmap if original is valid (it might be null if we only wanted thumbnails)
+            pix_original = QPixmap.fromImage(original) if not original.isNull() else None
+            pix_small = QPixmap.fromImage(small) if not small.isNull() else None
+            pix_timeline = QPixmap.fromImage(timeline) if not timeline.isNull() else None
+            pix_preview = QPixmap.fromImage(preview) if not preview.isNull() else None
 
             with self._lock:
                 if pix_original:
                     self._originals[path] = pix_original
                     self._originals.move_to_end(path)
+                    #print(f"[Cache] Registered Original: {Path(path).name} (Current: {len(self._originals)}/{self._capacity})")
                     self._enforce_capacity()
 
                 if pix_small:
@@ -259,9 +226,9 @@ class ImageCache(QObject):
         with self._lock:
             if path in self._originals:
                 self._originals.move_to_end(path)
-                # print(f"[Cache] Hit Original: {Path(path).name}")
+                #print(f"[Cache] Hit Original: {Path(path).name}")
                 return self._originals[path]
-            # print(f"[Cache] Miss Original: {Path(path).name}")
+            #print(f"[Cache] Miss Original: {Path(path).name}")
             return None
 
     def get_thumbnail_small(self, path: str) -> Optional[QPixmap]:
@@ -308,13 +275,11 @@ class ImageCache(QObject):
         self._is_running = False
 
         # Cancel any pending futures and shutdown
-        # IMPORTANT: wait=True to ensure all background threads complete
-        # before returning
+        # IMPORTANT: wait=True to ensure all background threads complete before returning
         # This prevents thread leaks when the application closes
         try:
             # Python 3.9+ supports cancel_futures
-            self._executor.shutdown(
-                wait=True, cancel_futures=True)
+            self._executor.shutdown(wait=True, cancel_futures=True)
         except TypeError:
             # Fallback for older python
             self._executor.shutdown(wait=True)
