@@ -65,18 +65,25 @@ class UndoStack:
 
 class MacroCommand(Command):
     """Command that executes multiple commands together"""
-    def __init__(self, commands: List[Command], description="Macro command"):
+    def __init__(self, commands: List[Command], description="Macro command", callback=None):
         self.commands = commands
         self.description = description
+        self.callback = callback
 
     def undo(self):
         # Undo in reverse order
         for cmd in reversed(self.commands):
             cmd.undo()
+        
+        if self.callback:
+            self.callback()
 
     def redo(self):
         for cmd in self.commands:
             cmd.redo()
+
+        if self.callback:
+            self.callback()
 
     def text(self) -> str:
         return self.description

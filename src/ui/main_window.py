@@ -2150,7 +2150,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.clips.append(new_clip)
 
         # Push composite command
-        macro_cmd = MacroCommand([modify_cmd, add_cmd], description="Split subtitle")
+        macro_cmd = MacroCommand([modify_cmd, add_cmd], description="Split subtitle", callback=self._on_undo_redo_callback)
         self.undo_stack.push(macro_cmd)
         self._update_undo_redo_actions()
 
@@ -2297,7 +2297,7 @@ class MainWindow(QMainWindow):
             description="Merge subtitles (remove second)"
         )
 
-        macro_cmd = MacroCommand([modify_cmd, remove_cmd], description="Merge subtitles")
+        macro_cmd = MacroCommand([modify_cmd, remove_cmd], description="Merge subtitles", callback=self._on_undo_redo_callback)
         self.undo_stack.push(macro_cmd)
         self._update_undo_redo_actions()
 
@@ -2865,18 +2865,21 @@ class MainWindow(QMainWindow):
             added=[new_clip],
             removed=[],
             description=f"Insert image {new_clip.name}",
-            callback=self._on_undo_redo_callback
+            callback=None # MacroCommand handles callback
         )
         commands.append(add_cmd)
         
         if len(commands) > 1:
             macro_cmd = MacroCommand(
                  commands,
-                 description=f"스마트 삽입: {new_clip.name}"
+                 description=f"스마트 삽입: {new_clip.name}",
+                 callback=self._on_undo_redo_callback
             )
             self.undo_stack.push(macro_cmd)
             macro_cmd.redo()
         else:
+            # If only one command, make sure it has the callback
+            add_cmd.callback = self._on_undo_redo_callback
             self.undo_stack.push(add_cmd)
             add_cmd.redo()
 
@@ -3019,24 +3022,26 @@ class MainWindow(QMainWindow):
                 callback=None  # MacroCommand에서 처리
             )
             commands.append(modify_cmd)
-        
         add_cmd = AddRemoveClipsCommand(
             self.timeline_widget.canvas,
             added=[new_clip],
             removed=[],
             description=f"드래그로 이미지 추가: {new_clip.name}",
-            callback=self._on_undo_redo_callback  # 마지막 command에 callback 설정
+            callback=None # MacroCommand handles callback
         )
         commands.append(add_cmd)
         
         if len(commands) > 1:
             macro_cmd = MacroCommand(
                 commands,
-                description=f"스마트 이미지 삽입: {new_clip.name}"
+                description=f"스마트 이미지 삽입: {new_clip.name}",
+                callback=self._on_undo_redo_callback
             )
             self.undo_stack.push(macro_cmd)
             macro_cmd.redo()
         else:
+            # If only one command, make sure it has the callback
+            add_cmd.callback = self._on_undo_redo_callback
             self.undo_stack.push(add_cmd)
             add_cmd.redo()
         
