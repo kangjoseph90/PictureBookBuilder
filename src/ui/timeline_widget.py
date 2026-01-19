@@ -3,6 +3,7 @@ Timeline Widget - Visual timeline editor with waveform display and playhead
 """
 from dataclasses import dataclass, field
 from typing import Optional, List
+from collections import OrderedDict
 import copy
 import numpy as np
 
@@ -107,7 +108,8 @@ class TimelineCanvas(QWidget):
         self.waveform_extractor = None  # Will be set by main_window
         
         # Waveform rendering optimization
-        self._waveform_path_cache: dict[str, QPainterPath] = {}  # Cache QPainterPath for each clip
+        self._waveform_path_cache: OrderedDict[str, QPainterPath] = OrderedDict()  # Cache QPainterPath for each clip
+        self._max_waveform_cache_size = 1000  # Prevent memory leaks from zooming
         
         # Image cache for thumbnails (pre-generated)
         self._image_cache = get_image_cache()
@@ -731,8 +733,9 @@ class TimelineCanvas(QWidget):
         cache_key = f"{clip.id}_{int(width)}_{int(height)}_{clip.offset:.2f}_{clip.duration:.2f}"
         
         if cache_key in self._waveform_path_cache:
-            # Use cached path
+            # Use cached path and mark as recently used
             path = self._waveform_path_cache[cache_key]
+            self._waveform_path_cache.move_to_end(cache_key)
         else:
             # Generate new path
             path = QPainterPath()
@@ -771,8 +774,12 @@ class TimelineCanvas(QWidget):
             
             path.closeSubpath()
             
-            # Cache the path
+            # Cache the path with LRU eviction
             self._waveform_path_cache[cache_key] = path
+            self._waveform_path_cache.move_to_end(cache_key)
+
+            if len(self._waveform_path_cache) > self._max_waveform_cache_size:
+                self._waveform_path_cache.popitem(last=False)  # Remove oldest
         
         # Draw the cached or newly created path
         painter.save()
