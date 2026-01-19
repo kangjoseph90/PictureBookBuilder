@@ -12,6 +12,14 @@ except ImportError:
     RAPIDFUZZ_AVAILABLE = False
     fuzz = None
 
+try:
+    from num2words import num2words
+    NUM2WORDS_AVAILABLE = True
+except ImportError:
+    print("Warning: num2words module not found. Number normalization will be disabled.")
+    NUM2WORDS_AVAILABLE = False
+    num2words = None
+
 from .script_parser import DialogueLine
 from .transcriber import TranscriptionResult, WordSegment
 
@@ -41,7 +49,29 @@ class Aligner:
         # Remove punctuation and extra whitespace
         text = re.sub(r'[^\w\s]', '', text)
         text = re.sub(r'\s+', ' ', text)
-        return text.strip().lower()
+        text = text.strip().lower()
+        
+        # Convert numbers to words for better fuzzy matching (English only)
+        # Korean has too many number variations (고유어/한자어), so skip conversion
+        if NUM2WORDS_AVAILABLE:
+            has_korean = bool(re.search(r'[가-힣]', text))
+            
+            # Only convert numbers for English text
+            if not has_korean:
+                def replace_number(match):
+                    num_str = match.group(0)
+                    try:
+                        num = int(num_str)
+                        if num <= 999999:
+                            return num2words(num, lang='en')
+                        else:
+                            return num_str
+                    except (ValueError, OverflowError):
+                        return num_str
+                
+                text = re.sub(r'(?<![0-9])\d+(?![0-9])', replace_number, text)
+        
+        return text
     
     def align_words_to_script(
         self,
