@@ -321,7 +321,7 @@ class VideoRenderer:
                 last_path = None
                 for img_path, dur in visuals:
                     p = (img_path or black_path).replace("\\", "/").replace("'", "'\\''")
-                    f.write(f"file '{p}'\nduration {dur}\n")
+                    f.write(f"file '{p}'\nduration {dur:.6f}\n")
                     last_path = p
                 # FFmpeg concat demuxer bug: last file's duration is ignored
                 # unless there's another file entry after it
@@ -379,18 +379,22 @@ class VideoRenderer:
                             unique_pngs[t] = p
                             temp_files.append(p)
 
-                # Build subtitle timeline
+                # Build subtitle timeline with floating-point precision handling
+                # Use a minimum duration threshold to avoid scientific notation issues
+                MIN_DURATION = 0.001  # 1ms minimum
                 sub_timeline = []
                 cur = 0.0
                 for sub in valid_subs:
-                    if sub.start_time > cur and sub.start_time - cur > 0.001:
-                        sub_timeline.append((trans_path, sub.start_time - cur))
+                    gap = sub.start_time - cur
+                    if gap > MIN_DURATION:
+                        sub_timeline.append((trans_path, gap))
                     dur = sub.end_time - max(sub.start_time, cur)
-                    if dur > 0.001:
+                    if dur > MIN_DURATION:
                         sub_timeline.append((unique_pngs[sub.text], dur))
                         cur = sub.end_time
-                if cur < total_duration:
-                    sub_timeline.append((trans_path, total_duration - cur))
+                remaining = total_duration - cur
+                if remaining > MIN_DURATION:
+                    sub_timeline.append((trans_path, remaining))
 
                 # Concat file
                 fd, sub_concat = tempfile.mkstemp(prefix="pbb_sub_", suffix=".txt")
@@ -399,8 +403,10 @@ class VideoRenderer:
                 with open(sub_concat, "w", encoding="utf-8") as f:
                     last_sub = None
                     for p, d in sub_timeline:
+                        # Format duration with fixed decimal places to avoid scientific notation
+                        d_formatted = f"{d:.6f}"
                         escaped = p.replace(chr(92), '/').replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))
-                        f.write(f"file '{escaped}'\nduration {d}\n")
+                        f.write(f"file '{escaped}'\nduration {d_formatted}\n")
                         last_sub = escaped
                     # FFmpeg concat demuxer bug fix
                     if last_sub:
