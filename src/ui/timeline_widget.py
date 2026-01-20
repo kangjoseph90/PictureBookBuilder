@@ -396,8 +396,15 @@ class TimelineCanvas(QWidget):
 
         # High-DPI support: multiply size by device pixel ratio
         dpr = self.devicePixelRatio()
-        self._cached_background = QPixmap(self.size() * dpr)
-        self._cached_background.setDevicePixelRatio(dpr)
+        target_size = self.size() * dpr
+
+        # Reuse existing pixmap if possible to avoid reallocation overhead
+        if (self._cached_background is None or
+            self._cached_background.size() != target_size or
+            self._cached_background.devicePixelRatio() != dpr):
+            self._cached_background = QPixmap(target_size)
+            self._cached_background.setDevicePixelRatio(dpr)
+
         self._cached_background.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(self._cached_background)
