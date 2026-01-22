@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QStyle, QComboBox, QStyleOption, QStyleOptionSlider
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QSize, QPointF
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QPen, QColor, QFontMetrics, QMouseEvent, QIcon, QPolygonF, QBrush
-from PyQt6.QtCore import QPointF
+from PyQt6.QtMultimedia import QMediaPlayer
 
 
 class ClickableSlider(QSlider):
@@ -406,7 +406,7 @@ class PreviewWidget(QWidget):
         # --- RIGHT: Speed Control ---
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
-        self.speed_combo.setCurrentIndex(2) # 1.0x
+        self.speed_combo.setCurrentIndex(2)  # 1.0x
         self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         self.speed_combo.setFixedWidth(70)
@@ -577,15 +577,34 @@ class PreviewWidget(QWidget):
             return
         
         target_size = self.image_label.size()
+        is_playing = self.audio_mixer.is_playing
         
+        # Optimization: During playback, prefer thumbnail to avoid heavy scaling
+        if is_playing:
+            # Try preview thumbnail first (640x360)
+            preview_thumb = self._image_cache.get_thumbnail_preview(image_path)
+            if preview_thumb and not preview_thumb.isNull():
+                # Scale is fast because it's small
+                scaled = preview_thumb.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.image_label.setPixmap(scaled)
+                self.showing_placeholder = False
+                return
+
         # 1. Get original from shared cache (Best quality)
         original = self._image_cache.get_original(image_path)
         if original and not original.isNull():
             # Scale to fit label
+            # Optimization: Use FastTransformation if playing
+            mode = Qt.TransformationMode.FastTransformation if is_playing else Qt.TransformationMode.SmoothTransformation
+
             scaled = original.scaled(
                 target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                mode
             )
             self.image_label.setPixmap(scaled)
             self.showing_placeholder = False
@@ -631,9 +650,9 @@ class PreviewWidget(QWidget):
                 # If seeking (scrubbing), don't prefetch immediately to save I/O
                 if self.is_seeking:
                     # Restart timer to prefetch only when scrubbing slows down or stops
-                    self._prefetch_timer.start(200) # 200ms debounce
+                    self._prefetch_timer.start(200)  # 200ms debounce
                 else:
-                    self._request_prefetch(current_idx)
+                    self._request_prefetch(current_idx, load_full_res=False)
 
         # Update image and subtitle if we have clips
 
@@ -754,6 +773,9 @@ class PreviewWidget(QWidget):
         """Toggle playback"""
         if self.audio_mixer.is_playing:
             self.audio_mixer.pause()
+            # Bolt: Load full res of current image when paused
+            if self.current_image:
+                 self._image_cache.prefetch_images([self.current_image])
         else:
             self.audio_mixer.play()
     
@@ -881,7 +903,7 @@ class PreviewWidget(QWidget):
                 break
         
         if current_idx != -1:
-            self._request_prefetch(current_idx)
+            self._request_prefetch(current_idx, load_full_res=True)
     
     def _on_seek(self, value: int):
         """Handle seek slider drag"""
@@ -893,7 +915,7 @@ class PreviewWidget(QWidget):
             # Update image and subtitle preview while seeking
             self._update_preview_content(position_ms)
             
-    def _request_prefetch(self, current_idx: int):
+    def _request_prefetch(self, current_idx: int, load_full_res: bool = False):
         """Request prefetch for a range of images around the current one"""
         if not self.image_clips:
             return
@@ -904,11 +926,14 @@ class PreviewWidget(QWidget):
         start_idx = max(0, current_idx - 2)
         end_idx = min(len(self.image_clips), current_idx + 3)
         
-        target_clips = self.image_clips[start_idx : end_idx]
+        target_clips = self.image_clips[start_idx:end_idx]
         paths = [c['path'] for c in target_clips]
         
         if paths:
-            self._image_cache.prefetch_images(paths)
+            if load_full_res:
+                self._image_cache.prefetch_images(paths)
+            else:
+                self._image_cache.load_images(paths)
             
     def _do_deferred_prefetch(self):
         """Perform prefetch for the current position (used when scrubbing stops)"""
@@ -920,7 +945,7 @@ class PreviewWidget(QWidget):
                 break
         
         if current_idx != -1:
-            self._request_prefetch(current_idx)
+            self._request_prefetch(current_idx, load_full_res=True)
     
     def resizeEvent(self, event):
         """Handle resize to refresh image scaling and subtitle position"""
