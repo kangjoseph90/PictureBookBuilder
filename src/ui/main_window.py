@@ -48,7 +48,8 @@ class ImageGridDelegate(QStyledItemDelegate):
         
         # Layout metrics
         rect = option.rect
-        icon_size = 64
+        # Dynamic icon size from option (set by view)
+        icon_size = option.decorationSize.width() if not option.decorationSize.isEmpty() else 64
         spacing_text = 2 # Closer text
         
         # Draw Icon (Centered horizontally, Top aligned)
@@ -82,13 +83,52 @@ class ImageGridDelegate(QStyledItemDelegate):
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_text)
             
     def sizeHint(self, option, index):
-        # Reduced height (110 -> 100) for tighter spacing
-        return QSize(100, 100)
+        # Dynamic size based on icon size
+        icon_size = option.decorationSize.width() if not option.decorationSize.isEmpty() else 64
+        # Add padding for text (approx 36px: 5 top + icon + 5 spacing + 20 text + bottom)
+        total_size = icon_size + 36
+        return QSize(total_size, total_size)
 
 
 class DraggableImageListWidget(QListWidget):
     """Custom QListWidget that provides file URLs when dragging for external drop targets"""
     
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.min_zoom = 32
+        self.max_zoom = 256
+        self.zoom_step = 16
+
+    def wheelEvent(self, event):
+        """Handle zoom with Ctrl+Wheel"""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def zoom_in(self):
+        self._adjust_zoom(1)
+
+    def zoom_out(self):
+        self._adjust_zoom(-1)
+
+    def _adjust_zoom(self, direction):
+        current_size = self.iconSize().width()
+        new_size = current_size + (self.zoom_step * direction)
+        new_size = max(self.min_zoom, min(new_size, self.max_zoom))
+
+        if new_size != current_size:
+            self.setIconSize(QSize(new_size, new_size))
+            # Adjust grid size to accommodate icon + text padding
+            # Matches calculation in Delegate sizeHint
+            padding = 36
+            self.setGridSize(QSize(new_size + padding, new_size + padding))
+
     def mimeData(self, items):
         """Override to include file URLs in the mime data for drag operations"""
         mime = super().mimeData(items)
