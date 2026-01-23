@@ -1245,13 +1245,15 @@ class TimelineCanvas(QWidget):
                 if url.isLocalFile():
                     path = url.toLocalFile().lower()
                     if path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
-                        event.acceptProposedAction()
+                        event.setDropAction(Qt.DropAction.CopyAction)
+                        event.accept()
                         return
         # Also accept text with file paths (from QListWidget)
         if event.mimeData().hasText():
             text = event.mimeData().text()
             if text.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
-                event.acceptProposedAction()
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
                 return
         event.ignore()
     
@@ -1263,10 +1265,12 @@ class TimelineCanvas(QWidget):
         
         # Accept if within image track area
         if image_track_y <= y <= image_track_y + self.track_height:
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
         else:
             # Still accept but could show different feedback
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
     
     def dropEvent(self, event: QDropEvent):
         """Handle drop - create image clip at drop position"""
@@ -1291,7 +1295,8 @@ class TimelineCanvas(QWidget):
                 image_path = text
         
         if image_path:
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             self.image_dropped.emit(image_path, drop_time)
         else:
             event.ignore()

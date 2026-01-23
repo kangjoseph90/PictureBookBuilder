@@ -845,7 +845,7 @@ class MainWindow(QMainWindow):
         self.image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # Multi-select with Ctrl/Shift
         self.image_list.setDragDropMode(QListWidget.DragDropMode.DragDrop)  # Enable drag to external widgets
-        self.image_list.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.image_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.image_list.setDragEnabled(True)
         self.image_list.setAcceptDrops(True)
         self.image_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
