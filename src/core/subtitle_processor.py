@@ -30,10 +30,10 @@ class SubtitleProcessor:
     SEG_SCORE_SENTENCE_END = 60
     SEG_SCORE_CLAUSE_END = 40
     SEG_SCORE_KOREAN_PARTICLE = 20
-    SEG_SCORE_KOREAN_CONNECTIVE = 30
+    SEG_SCORE_KOREAN_CONNECTIVE = 50
     SEG_SCORE_KOREAN_DEPENDENT = 30
-    SEG_SCORE_ENGLISH_CONJ = 20
-    SEG_SCORE_ENGLISH_PREP = 20
+    SEG_SCORE_ENGLISH_CONJ = 40
+    SEG_SCORE_ENGLISH_PREP = 40
     SEG_PENALTY_DISTANCE_WEIGHT = 50
     SEG_PENALTY_ORPHAN = -100
     SEG_PENALTY_TIGHT_BINDING = -25
@@ -42,10 +42,10 @@ class SubtitleProcessor:
     LINE_SCORE_SENTENCE_END = 50      # 문장부호 뒤 (최우선)
     LINE_SCORE_CLAUSE_END = 40        # 쉼표 뒤
     LINE_SCORE_KOREAN_PARTICLE = 25   # 조사 뒤
-    LINE_SCORE_KOREAN_CONNECTIVE = 35 # 연결어미/종결어미 뒤
+    LINE_SCORE_KOREAN_CONNECTIVE = 50 # 연결어미/종결어미 뒤
     LINE_SCORE_KOREAN_DEPENDENT = 15  # 의존명사
-    LINE_SCORE_ENGLISH_CONJ = 20      # 영어 접속사 앞
-    LINE_SCORE_ENGLISH_PREP = 15      # 영어 전치사 앞
+    LINE_SCORE_ENGLISH_CONJ = 40      # 영어 접속사 앞
+    LINE_SCORE_ENGLISH_PREP = 30      # 영어 전치사 앞
     LINE_PENALTY_DISTANCE_WEIGHT = 60 # 거리 페널티 완화
     LINE_PENALTY_ORPHAN = -100
     LINE_PENALTY_TIGHT_BINDING = -30  # 관형형 분할 억제
@@ -70,8 +70,8 @@ class SubtitleProcessor:
     
     def __init__(
         self,
-        line_soft_cap: int = 18,
-        line_hard_cap: int = 25,
+        line_soft_cap: int = 30,
+        line_hard_cap: int = 40,
         max_lines: int = 2,
         split_on_conjunctions: bool = True
     ):
@@ -221,7 +221,7 @@ class SubtitleProcessor:
             bonus += score_clause
         
         # 3순위: 언어별 처리 (설정에서 켜져 있을 때만)
-        elif self.split_on_conjunctions:
+        if self.split_on_conjunctions:
             if lang == 'ko':
                 # 한국어: 형태소 분석 기반 판단 (문맥 기반 분석 사용)
                 bonus += self._calculate_korean_morpheme_bonus(text, space_idx, is_segment, morpheme_cache)
@@ -306,6 +306,10 @@ class SubtitleProcessor:
         #    시간적 연결을 나타내는 자연스러운 분할점
         elif prev_last_pos == 'NNG' and prev_word in ('뒤', '후', '다음', '때', '순간', '직후', '이후'):
             bonus += score_connective  # 연결어미와 동일한 점수
+
+        # 7. 접속 부사 앞 분할 권장 (그리고, 그러나 등)
+        if next_first_pos == 'MAJ':
+            bonus += score_connective
 
         # === 분할 억제 패턴 (tight binding) ===
         binding_penalty = self.SEG_PENALTY_TIGHT_BINDING if is_segment else self.LINE_PENALTY_TIGHT_BINDING
