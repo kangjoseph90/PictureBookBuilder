@@ -93,6 +93,8 @@ class ImageGridDelegate(QStyledItemDelegate):
 class DraggableImageListWidget(QListWidget):
     """Custom QListWidget that provides file URLs when dragging for external drop targets"""
     
+    zoom_changed = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.min_zoom = 32
@@ -128,6 +130,7 @@ class DraggableImageListWidget(QListWidget):
             # Matches calculation in Delegate sizeHint
             padding = 36
             self.setGridSize(QSize(new_size + padding, new_size + padding))
+            self.zoom_changed.emit(new_size)
 
     def mimeData(self, items):
         """Override to include file URLs in the mime data for drag operations"""
@@ -893,6 +896,9 @@ class MainWindow(QMainWindow):
         # Use custom delegate to draw text BELOW icon
         self.image_list.setItemDelegate(ImageGridDelegate(self.image_list))
         
+        # Connect zoom signal
+        self.image_list.zoom_changed.connect(self._on_image_list_zoom_changed)
+
         # Install event filter for click-to-load
         self.image_list.viewport().installEventFilter(self)
         
@@ -1307,10 +1313,7 @@ class MainWindow(QMainWindow):
             
             # Check if already cached - if so, apply thumbnail immediately
             if cache.has_thumbnail(path_str):
-                pixmap = cache.get_thumbnail_small(path_str)
-                if pixmap and not pixmap.isNull():
-                    item.setIcon(QIcon(pixmap))
-                    item.setText(f.name)
+                self._update_item_icon(item, path_str)
             else:
                 # Need to load this image
                 image_paths_to_load.append(path_str)
@@ -1324,16 +1327,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_image_path_to_item'):
             return
         
-        from .image_cache import get_image_cache
-        cache = get_image_cache()
-        
         item = self._image_path_to_item.get(path)
         if item:
-            pixmap = cache.get_thumbnail_small(path)
-            if pixmap and not pixmap.isNull():
-                icon = QIcon(pixmap)
-                item.setIcon(icon)
-                item.setText(Path(path).name)
+            self._update_item_icon(item, path)
         
         # Also update timeline if this image is used there
         for clip in self.timeline_widget.canvas.clips:
@@ -1342,6 +1338,38 @@ class MainWindow(QMainWindow):
                 self.timeline_widget.canvas.update()
                 break
     
+    def _on_image_list_zoom_changed(self, new_size: int):
+        """Handle zoom change in image list - update icons to appropriate resolution"""
+        for i in range(self.image_list.count()):
+            item = self.image_list.item(i)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                self._update_item_icon(item, path)
+
+    def _update_item_icon(self, item: QListWidgetItem, path: str):
+        """Update item icon using best available thumbnail for current size"""
+        from .image_cache import get_image_cache
+        cache = get_image_cache()
+
+        current_size = self.image_list.iconSize().width()
+
+        # Select appropriate thumbnail based on size
+        pixmap = None
+        if current_size > 50:
+             # Use larger preview thumbnail for zoomed in view
+             pixmap = cache.get_thumbnail_preview(path)
+             # Fallback to timeline if preview not available
+             if not pixmap:
+                 pixmap = cache.get_thumbnail_timeline(path)
+
+        # Fallback to small or if size is small
+        if not pixmap:
+            pixmap = cache.get_thumbnail_small(path)
+
+        if pixmap and not pixmap.isNull():
+            item.setIcon(QIcon(pixmap))
+            item.setText(Path(path).name)
+
     def _apply_images_to_timeline(self):
         """Apply images from list to timeline, mapping 1:1 with audio clips"""
         
