@@ -1203,6 +1203,9 @@ class MainWindow(QMainWindow):
         # Update info
         self.mapping_info.setText(f"{len(self.speakers)}명의 화자 감지됨. 각 화자에 오디오 파일을 지정하세요.")
         self.mapping_info.setStyleSheet("color: orange;")
+
+        # Update canvas map
+        self.timeline_widget.canvas.speaker_audio_map = self.speaker_audio_map
     
     def _on_mapping_table_clicked(self, row, column):
         """Handle click on speaker mapping table"""
@@ -1218,6 +1221,11 @@ class MainWindow(QMainWindow):
         if path:
             self.speaker_audio_map[speaker] = path
             
+            # Update canvas map and redraw to clear any missing file warnings
+            self.timeline_widget.canvas.speaker_audio_map = self.speaker_audio_map
+            self.timeline_widget.canvas._background_dirty = True
+            self.timeline_widget.canvas.update()
+
             # Update table
             audio_item = QTableWidgetItem(Path(path).name)
             audio_item.setForeground(QColor(100, 200, 100))
@@ -3563,6 +3571,9 @@ class MainWindow(QMainWindow):
         # Reset preview
         self.preview_widget.clear_preview()
         
+        # Reset audio map in canvas
+        self.timeline_widget.canvas.speaker_audio_map = {}
+
         self.mark_clean()
         self.setWindowTitle("PictureBookBuilder")
         self.statusBar().showMessage("새 프로젝트가 생성되었습니다.")
@@ -3750,6 +3761,9 @@ class MainWindow(QMainWindow):
         self.image_folder = data.get('image_folder')
         self.speaker_audio_map = data.get('speaker_audio_map', {})
         
+        # Update canvas map
+        self.timeline_widget.canvas.speaker_audio_map = self.speaker_audio_map
+
         # Load settings if present
         if 'settings' in data:
             self.runtime_config = RuntimeConfig.from_dict(data['settings'])
