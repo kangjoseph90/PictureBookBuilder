@@ -9,7 +9,7 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, 
-    QLabel, QMenu
+    QLabel, QMenu, QScrollBar
 )
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QTimer, QMimeData, QUrl
 from PyQt6.QtGui import (
@@ -33,6 +33,7 @@ class TimelineCanvas(QWidget):
     clip_delete_requested = pyqtSignal(str)  # Emits clip id when delete key pressed
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     image_dropped = pyqtSignal(str, float)  # Emits image path and timeline position
+    view_changed = pyqtSignal()  # Emits when zoom/scroll/size changes
     
     # NEW: Signal to notify command generation
     # action_type: 'move', 'resize', etc.
@@ -132,6 +133,7 @@ class TimelineCanvas(QWidget):
         self._update_total_duration()
         self._background_dirty = True
         self.update()
+        self.view_changed.emit()
     
     def _schedule_throttled_update(self, waveform_clip_id: Optional[str] = None):
         """Schedule a throttled update to reduce CPU usage during fast dragging.
@@ -248,6 +250,7 @@ class TimelineCanvas(QWidget):
 
         if self.scroll_offset != old_scroll:
             self._background_dirty = True
+            self.view_changed.emit()
         
         self.update()
     
@@ -257,6 +260,7 @@ class TimelineCanvas(QWidget):
         self._recalculate_positions()
         self._background_dirty = True
         self.update()
+        self.view_changed.emit()
     
     def _recalculate_positions(self):
         """Recalculate clip positions with uniform gaps"""
@@ -388,6 +392,7 @@ class TimelineCanvas(QWidget):
     def resizeEvent(self, event):
         self._background_dirty = True
         super().resizeEvent(event)
+        self.view_changed.emit()
 
     def _update_background_cache(self):
         """Update the cached background pixmap"""
@@ -1225,6 +1230,7 @@ class TimelineCanvas(QWidget):
         
         self._background_dirty = True
         self.update()
+        self.view_changed.emit()
 
     def keyPressEvent(self, event):
         """Handle key press events"""
@@ -1245,13 +1251,15 @@ class TimelineCanvas(QWidget):
                 if url.isLocalFile():
                     path = url.toLocalFile().lower()
                     if path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
-                        event.acceptProposedAction()
+                        event.setDropAction(Qt.DropAction.CopyAction)
+                        event.accept()
                         return
         # Also accept text with file paths (from QListWidget)
         if event.mimeData().hasText():
             text = event.mimeData().text()
             if text.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
-                event.acceptProposedAction()
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
                 return
         event.ignore()
     
@@ -1263,10 +1271,12 @@ class TimelineCanvas(QWidget):
         
         # Accept if within image track area
         if image_track_y <= y <= image_track_y + self.track_height:
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
         else:
             # Still accept but could show different feedback
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
     
     def dropEvent(self, event: QDropEvent):
         """Handle drop - create image clip at drop position"""
@@ -1291,7 +1301,8 @@ class TimelineCanvas(QWidget):
                 image_path = text
         
         if image_path:
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             self.image_dropped.emit(image_path, drop_time)
         else:
             event.ignore()
@@ -1343,10 +1354,56 @@ class TimelineWidget(QWidget):
         # Timeline canvas
         self.canvas = TimelineCanvas()
         self.canvas.playhead_moved.connect(self._on_playhead_moved)
+        self.canvas.view_changed.connect(self._update_scrollbar)
         content_layout.addWidget(self.canvas, 1)
         
         layout.addLayout(content_layout)
+
+        # Scrollbar layout (Spacer + ScrollBar)
+        scrollbar_layout = QHBoxLayout()
+        scrollbar_layout.setSpacing(0)
+
+        # Spacer to align scrollbar with canvas (skipping track labels)
+        spacer = QWidget()
+        spacer.setFixedWidth(70) # Match track_labels width
+        spacer.setStyleSheet("background-color: #252525;") # Match track labels bg
+        scrollbar_layout.addWidget(spacer)
+
+        # Horizontal ScrollBar
+        self.scrollbar = QScrollBar(Qt.Orientation.Horizontal)
+        self.scrollbar.valueChanged.connect(self._on_scroll_moved)
+        scrollbar_layout.addWidget(self.scrollbar)
+
+        layout.addLayout(scrollbar_layout)
     
+    def _update_scrollbar(self):
+        """Update scrollbar range and value based on canvas state"""
+        if not self.canvas or self.canvas.width() <= 0:
+            return
+
+        visible_width = self.canvas.width()
+        content_width = self.canvas.total_duration * self.canvas.zoom
+
+        # Add padding so we can scroll past the last clip
+        padding = visible_width * 0.5
+        total_scrollable_width = content_width + padding
+
+        # Maximum value for scrollbar
+        max_scroll = max(0, total_scrollable_width - visible_width)
+
+        self.scrollbar.blockSignals(True)
+        self.scrollbar.setRange(0, int(max_scroll))
+        self.scrollbar.setPageStep(int(visible_width))
+        self.scrollbar.setSingleStep(int(self.canvas.zoom)) # Scroll 1 second per step
+        self.scrollbar.setValue(int(self.canvas.scroll_offset))
+        self.scrollbar.blockSignals(False)
+
+    def _on_scroll_moved(self, value: int):
+        """Handle scrollbar movement"""
+        self.canvas.scroll_offset = float(value)
+        self.canvas._background_dirty = True
+        self.canvas.update()
+
     def _on_playhead_moved(self, time: float):
         """Handle playhead movement from canvas"""
         self.playhead_changed.emit(time)
