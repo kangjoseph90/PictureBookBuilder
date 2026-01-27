@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 from collections import OrderedDict
 import copy
+import os
+from pathlib import Path
 import numpy as np
 
 from PyQt6.QtWidgets import (
@@ -106,6 +108,7 @@ class TimelineCanvas(QWidget):
         
         # Audio cache for real-time waveform updates
         self.speaker_audio_cache: dict[str, 'AudioSegment'] = {}
+        self.speaker_audio_map: dict[str, str] = {}  # Map speaker to file path for missing file detection
         self.waveform_extractor = None  # Will be set by main_window
         
         # Waveform rendering optimization
@@ -557,6 +560,25 @@ class TimelineCanvas(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(handle_path)
     
+    def _is_clip_source_missing(self, clip: TimelineClip) -> bool:
+        """Check if the source file for the clip is missing"""
+        if clip.clip_type == "image":
+            if clip.image_path:
+                return not os.path.exists(clip.image_path)
+            return True  # No path means missing
+        elif clip.clip_type == "audio":
+            # For audio, check speaker map
+            speaker = clip.speaker
+            if not speaker and ":" in clip.name:
+                speaker = clip.name.split(":")[0].strip()
+
+            if speaker:
+                path = self.speaker_audio_map.get(speaker)
+                if path:
+                    return not os.path.exists(path)
+                return True # No path mapped means missing
+        return False
+
     def _draw_clip(self, painter: QPainter, clip: TimelineClip):
         """Draw a single clip with waveform"""
         x = self.time_to_x(clip.start)
@@ -567,24 +589,40 @@ class TimelineCanvas(QWidget):
         if width < 1:
             return
         
+        # Check for missing file
+        is_missing = self._is_clip_source_missing(clip)
+
         # Clip rectangle
         color = clip.color
         if clip.id == self.selected_clip:
             color = color.lighter(130)
         
         # Draw background
-        painter.setBrush(QBrush(color.darker(180)))
-        painter.setPen(QPen(color, 1))
+        if is_missing:
+            # Yellow diagonal pattern for warning
+            painter.setBrush(QBrush(QColor(255, 200, 0, 100), Qt.BrushStyle.DiagCrossPattern))
+            painter.setPen(QPen(QColor(255, 200, 0), 2))
+        else:
+            painter.setBrush(QBrush(color.darker(180)))
+            painter.setPen(QPen(color, 1))
+
         painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
         
-        # Draw waveform only for audio clips
-        if clip.clip_type == "audio" and clip.waveform and len(clip.waveform) > 0:
+        # Draw waveform only for audio clips (if not missing)
+        if not is_missing and clip.clip_type == "audio" and clip.waveform and len(clip.waveform) > 0:
             self._draw_waveform(painter, clip, x, y, width, height)
         
-        # Draw thumbnail for image clips
-        if clip.clip_type == "image" and clip.image_path:
+        # Draw thumbnail for image clips (if not missing)
+        if not is_missing and clip.clip_type == "image" and clip.image_path:
             self._draw_thumbnail(painter, clip, x, y, width, height)
         
+        # Warning Text for missing files
+        if is_missing and width > 20:
+             painter.setPen(QPen(QColor(255, 200, 0)))
+             painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+             painter.drawText(QRectF(x, y, width, height),
+                              Qt.AlignmentFlag.AlignCenter, "⚠️ MISSING")
+
         # Clip label (on top of waveform)
         if width > 30:
             painter.setPen(QPen(Qt.GlobalColor.white))
