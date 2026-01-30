@@ -2190,7 +2190,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("연결된 오디오 클립을 찾지 못해 분할할 수 없습니다.")
             return
 
-        processor = SubtitleProcessor()
+        processor = SubtitleProcessor(lead_time_ms=self.runtime_config.subtitle_lead_time_ms)
         
         # NEW API: 통합 Fuzzy Matching으로 타임스탬프 계산
         split_indices = [char_pos]
@@ -2391,7 +2391,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("연결된 오디오가 달라 병합할 수 없습니다.")
             return
         
-        processor = SubtitleProcessor()
+        processor = SubtitleProcessor(lead_time_ms=self.runtime_config.subtitle_lead_time_ms)
         # Use source audio coordinates for merge_segments
         # (though it doesn't do coordinate transformation, using offset maintains consistency)
         merged = processor.merge_segments(
@@ -2471,7 +2471,8 @@ class MainWindow(QMainWindow):
                     line_soft_cap=params['line_soft_cap'],
                     line_hard_cap=params['line_hard_cap'],
                     max_lines=params['max_lines'],
-                    split_on_conjunctions=config.subtitle_split_on_conjunctions
+                    split_on_conjunctions=config.subtitle_split_on_conjunctions,
+                    lead_time_ms=config.subtitle_lead_time_ms
                 )
             return processor_cache[language]
         
@@ -2503,7 +2504,7 @@ class MainWindow(QMainWindow):
             
             # Detect language and get appropriate processor
             if '_detector' not in processor_cache:
-                processor_cache['_detector'] = SubtitleProcessor()
+                processor_cache['_detector'] = SubtitleProcessor(lead_time_ms=config.subtitle_lead_time_ms)
             language = processor_cache['_detector'].detect_language(original_text)
             processor = get_processor(language)
             

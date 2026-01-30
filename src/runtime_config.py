@@ -22,6 +22,7 @@ from config import (
     SUBTITLE_LINE_HARD_CAP,
     SUBTITLE_MAX_LINES,
     SUBTITLE_SPLIT_ON_CONJUNCTIONS,
+    SUBTITLE_LEAD_TIME_MS,
     VIDEO_WIDTH,
     VIDEO_HEIGHT,
     VIDEO_FPS,
@@ -67,6 +68,7 @@ class RuntimeConfig:
     subtitle_line_hard_cap: int = SUBTITLE_LINE_HARD_CAP
     subtitle_max_lines: int = SUBTITLE_MAX_LINES
     subtitle_split_on_conjunctions: bool = SUBTITLE_SPLIT_ON_CONJUNCTIONS
+    subtitle_lead_time_ms: int = SUBTITLE_LEAD_TIME_MS
     
     # Render Settings (Persisted per project)
     render_width: int = VIDEO_WIDTH
@@ -132,6 +134,7 @@ class RuntimeConfig:
         self.subtitle_line_hard_cap = SUBTITLE_LINE_HARD_CAP
         self.subtitle_max_lines = SUBTITLE_MAX_LINES
         self.subtitle_split_on_conjunctions = SUBTITLE_SPLIT_ON_CONJUNCTIONS
+        self.subtitle_lead_time_ms = SUBTITLE_LEAD_TIME_MS
         
         # Reset Render Settings
         self.render_width = VIDEO_WIDTH

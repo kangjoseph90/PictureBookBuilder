@@ -73,12 +73,14 @@ class SubtitleProcessor:
         line_soft_cap: int = 18,
         line_hard_cap: int = 25,
         max_lines: int = 2,
-        split_on_conjunctions: bool = True
+        split_on_conjunctions: bool = True,
+        lead_time_ms: int = 100
     ):
         self.line_soft_cap = line_soft_cap
         self.line_hard_cap = line_hard_cap
         self.max_lines = max_lines
         self.split_on_conjunctions = split_on_conjunctions
+        self.lead_time_ms = lead_time_ms
         
         # 파생 파라미터 계산
         # soft_cap은 약간 여유있게 (max_lines - 0.5)로 계산하여 분할점 선택 범위 확보
@@ -591,9 +593,21 @@ class SubtitleProcessor:
                         best_score = score
                         best_idx = i
             
-            # 매칭된 단어의 end 타임스탬프 사용
+            # 매칭된 단어의 end 타임스탬프를 기준으로,
+            # 다음 단어 시작 시간에서 선행 시간을 뺀 값으로 전환
             word = words[best_idx]
-            timestamp = word.end if hasattr(word, 'end') else 0.0
-            timestamps.append(timestamp)
+            prev_end = word.end if hasattr(word, 'end') else 0.0
+            next_start = None
+            if best_idx + 1 < len(words):
+                next_word = words[best_idx + 1]
+                if hasattr(next_word, 'start'):
+                    next_start = next_word.start
+            if next_start is None:
+                timestamps.append(prev_end)
+                continue
+
+            lead_seconds = max(0.0, self.lead_time_ms / 1000.0)
+            candidate = next_start - lead_seconds
+            timestamps.append(max(prev_end, candidate))
         
         return timestamps

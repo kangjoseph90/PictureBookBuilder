@@ -178,6 +178,14 @@ class SettingsWidget(QWidget):
         self.spin_max_lines.setRange(1, 4)
         self.spin_max_lines.valueChanged.connect(self._on_setting_changed)
         form_layout.addRow("최대 줄 수:", self.spin_max_lines)
+
+        # Lead time
+        self.spin_subtitle_lead = QSpinBox()
+        self.spin_subtitle_lead.setRange(0, 1000)
+        self.spin_subtitle_lead.setSuffix(" ms")
+        self.spin_subtitle_lead.setToolTip("다음 음성 시작보다 얼마나 빨리 자막을 전환할지 설정")
+        self.spin_subtitle_lead.valueChanged.connect(self._on_setting_changed)
+        form_layout.addRow("선행 시간:", self.spin_subtitle_lead)
         
         # Split on conjunctions
         self.check_split_conj = QCheckBox("형태소 분석 사용 (~고, ~며)")
@@ -224,6 +232,7 @@ class SettingsWidget(QWidget):
         self.spin_max_lines.setValue(self._config.subtitle_max_lines)
         self.check_split_conj.setChecked(self._config.subtitle_split_on_conjunctions)
         self.check_auto_params.setChecked(self._config.subtitle_auto_params)
+        self.spin_subtitle_lead.setValue(self._config.subtitle_lead_time_ms)
         
         # Update enabled state based on auto_params
         self._update_manual_controls_enabled()
@@ -237,7 +246,7 @@ class SettingsWidget(QWidget):
             self.check_initial_prompt, self.check_qwen3_fa,
             self.spin_vad_padding, self.spin_gap, self.spin_qwen3_chunk,
             self.spin_line_soft, self.spin_line_hard, self.spin_max_lines,
-            self.check_split_conj, self.check_auto_params
+            self.spin_subtitle_lead, self.check_split_conj, self.check_auto_params
         ]
         for ctrl in controls:
             ctrl.blockSignals(block)
@@ -279,6 +288,7 @@ class SettingsWidget(QWidget):
         self._config.subtitle_max_lines = self.spin_max_lines.value()
         self._config.subtitle_split_on_conjunctions = self.check_split_conj.isChecked()
         self._config.subtitle_auto_params = self.check_auto_params.isChecked()
+        self._config.subtitle_lead_time_ms = self.spin_subtitle_lead.value()
     
     def reset_to_defaults(self):
         """Reset all settings to defaults."""
