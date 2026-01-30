@@ -101,7 +101,7 @@ class SettingsWidget(QWidget):
         self.check_stable_ts = QCheckBox("Stable-TS 사용 (정확한 타이밍, 느림)")
         self.check_stable_ts.stateChanged.connect(self._on_setting_changed)
         whisper_layout.addRow("", self.check_stable_ts)
-        
+
         # Initial Prompt checkbox
         self.check_initial_prompt = QCheckBox("Initial Prompt 사용 (스크립트 기반 힌트)")
         self.check_initial_prompt.setToolTip("체크 시: 스크립트 텍스트를 Whisper에 힌트로 제공\n해제 시: 힌트 없이 순수 음성인식")
@@ -124,7 +124,8 @@ class SettingsWidget(QWidget):
         self.spin_vad_padding.setRange(0, 500)
         self.spin_vad_padding.setSuffix(" ms")
         self.spin_vad_padding.valueChanged.connect(self._on_setting_changed)
-        audio_layout.addRow("VAD 패딩:", self.spin_vad_padding)
+        self.spin_vad_padding.setToolTip("VAD 사용 시 경계 패딩 / Qwen3 사용 시 클립 패딩")
+        audio_layout.addRow("패딩:", self.spin_vad_padding)
         
         # Gap between clips
         self.spin_gap = QDoubleSpinBox()
@@ -133,6 +134,21 @@ class SettingsWidget(QWidget):
         self.spin_gap.setSuffix(" 초")
         self.spin_gap.valueChanged.connect(self._on_setting_changed)
         audio_layout.addRow("클립 간격:", self.spin_gap)
+
+        # Qwen3 ForcedAligner checkbox (experimental)
+        self.check_qwen3_fa = QCheckBox("Qwen3 ForcedAligner 사용 (실험적)")
+        self.check_qwen3_fa.setToolTip("체크 시: Qwen3 ForcedAligner로 대사 정렬 (Whisper/정렬 대체)\n실험적 기능이며 환경에 따라 오류가 발생할 수 있습니다")
+        self.check_qwen3_fa.stateChanged.connect(self._on_setting_changed)
+        audio_layout.addRow("", self.check_qwen3_fa)
+
+        # Qwen3 ForcedAligner chunk seconds (experimental)
+        self.spin_qwen3_chunk = QDoubleSpinBox()
+        self.spin_qwen3_chunk.setRange(30.0, 600.0)
+        self.spin_qwen3_chunk.setSingleStep(10.0)
+        self.spin_qwen3_chunk.setSuffix(" 초")
+        self.spin_qwen3_chunk.setToolTip("Qwen3 ForcedAligner에서 한 번에 처리할 최대 오디오 길이")
+        self.spin_qwen3_chunk.valueChanged.connect(self._on_setting_changed)
+        audio_layout.addRow("Qwen3 청크 길이:", self.spin_qwen3_chunk)
         
         processing_layout.addLayout(audio_layout)
         layout.addWidget(self.processing_group)
@@ -195,10 +211,12 @@ class SettingsWidget(QWidget):
             
         self.check_stable_ts.setChecked(self._config.use_stable_ts)
         self.check_initial_prompt.setChecked(self._config.use_initial_prompt)
+        self.check_qwen3_fa.setChecked(self._config.use_qwen3_forced_aligner)
         
         # Audio
         self.spin_vad_padding.setValue(self._config.vad_padding_ms)
         self.spin_gap.setValue(self._config.default_gap_seconds)
+        self.spin_qwen3_chunk.setValue(self._config.qwen3_max_audio_seconds)
         
         # Subtitle
         self.spin_line_soft.setValue(self._config.subtitle_line_soft_cap)
@@ -216,8 +234,8 @@ class SettingsWidget(QWidget):
         """Block or unblock signals from all controls."""
         controls = [
             self.combo_model, self.combo_language, self.check_stable_ts,
-            self.check_initial_prompt,
-            self.spin_vad_padding, self.spin_gap,
+            self.check_initial_prompt, self.check_qwen3_fa,
+            self.spin_vad_padding, self.spin_gap, self.spin_qwen3_chunk,
             self.spin_line_soft, self.spin_line_hard, self.spin_max_lines,
             self.check_split_conj, self.check_auto_params
         ]
@@ -248,10 +266,12 @@ class SettingsWidget(QWidget):
         self._config.whisper_language = self.LANGUAGE_MAP.get(self.combo_language.currentText(), "ko")
         self._config.use_stable_ts = self.check_stable_ts.isChecked()
         self._config.use_initial_prompt = self.check_initial_prompt.isChecked()
+        self._config.use_qwen3_forced_aligner = self.check_qwen3_fa.isChecked()
         
         # Audio
         self._config.vad_padding_ms = self.spin_vad_padding.value()
         self._config.default_gap_seconds = self.spin_gap.value()
+        self._config.qwen3_max_audio_seconds = self.spin_qwen3_chunk.value()
         
         # Subtitle
         self._config.subtitle_line_soft_cap = self.spin_line_soft.value()

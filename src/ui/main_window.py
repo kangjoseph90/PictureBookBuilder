@@ -343,6 +343,7 @@ class ProcessingThread(QThread):
         # Store model references for cleanup
         self._transcriber = None
         self._vad = None
+        self._qwen3_aligner = None
         
         try:
             from core.script_parser import ScriptParser
@@ -368,7 +369,7 @@ class ProcessingThread(QThread):
                 self.finished.emit(False, f"오디오 파일이 지정되지 않은 화자: {', '.join(missing_speakers)}", None)
                 return
             
-            # Step 2.5: Build initial prompt from script for Whisper
+            # Step 2.5: Build initial prompt from script for Whisper (if used)
             script_text = ' '.join(d.text for d in dialogues)
             initial_prompt = self._build_whisper_prompt(speakers, script_text)
             print(f"Whisper initial prompt: {initial_prompt}")
@@ -377,93 +378,142 @@ class ProcessingThread(QThread):
             if self._check_cancelled():
                 return
             
-            # Step 3: Transcribe audio files
-            self.progress.emit(20, "Whisper 모델 로딩 중...")
-            self._transcriber = Transcriber()
-            
-            # Check for cancellation after model loading
-            if self._check_cancelled():
-                return
-            
+            config = get_config()
             transcriptions = {}
-            
-            total_speakers = len(self.speaker_audio_map)
-            for i, (speaker, audio_path) in enumerate(self.speaker_audio_map.items()):
-                if audio_path:
-                    progress = 20 + int((i / total_speakers) * 25)
-                    self.progress.emit(progress, f"Whisper 변환 중: {speaker}...")
-                    # Get configured language
-                    config = get_config()
-                    whisper_lang = config.whisper_language
-                    if whisper_lang == "auto":
-                        whisper_lang = None
-                        
-                    transcriptions[speaker] = self._transcriber.transcribe(
-                        audio_path, 
-                        language=whisper_lang,
-                        initial_prompt=initial_prompt
-                    )
-                    
-                    # Check for cancellation after each speaker
-                    if self._check_cancelled():
-                        return
 
-            # Step 4: Align dialogues
-            self.progress.emit(50, "대사 정렬 중...")
-            aligner = Aligner()
-            aligned = aligner.align_all(dialogues, transcriptions)
-            
-            # Check for cancellation before VAD
-            if self._check_cancelled():
-                return
+            if config.use_qwen3_forced_aligner:
+                # Step 3: Qwen3 ForcedAligner (experimental)
+                self.progress.emit(20, "Qwen3 ForcedAligner 로딩 중...")
+                from core.qwen3_forced_aligner import Qwen3ForcedAlignerWrapper
 
-            # Step 5: VAD Refinement - refine segment boundaries with Silero VAD
-            self.progress.emit(60, "VAD로 경계 보정 중...")
-            self._vad = VADProcessor()
-            
-            # Load speaker audio files for VAD
-            speaker_audio: dict[str, AudioSegment] = {}
-            for speaker, audio_path in self.speaker_audio_map.items():
-                if audio_path:
-                    speaker_audio[speaker] = AudioSegment.from_file(audio_path)
-            
-            # Refine each aligned segment with VAD
-            # Track previous end time per speaker to avoid overlap
-            prev_end_by_speaker: dict[str, float] = {}
-            
-            total_segments = len(aligned)
-            for i, segment in enumerate(aligned):
-                if i % 10 == 0:  # Update progress every 10 segments
-                    progress = 60 + int((i / total_segments) * 25)
-                    self.progress.emit(progress, f"VAD 보정 중 ({i+1}/{total_segments})...")
-                
-                speaker = segment.dialogue.speaker
-                if speaker in speaker_audio:
-                    audio = speaker_audio[speaker]
-                    
-                    # Get previous end time for this speaker
-                    prev_end = prev_end_by_speaker.get(speaker, None)
-                    
-                    # Refine boundaries using VAD with previous segment constraint
-                    try:
-                        refined_start, refined_end, raw_voice_end = self._vad.trim_segment_boundaries(
-                            audio,
-                            segment.start_time,
-                            segment.end_time,
-                            prev_end_time=prev_end
+                if self._check_cancelled():
+                    return
+
+                qwen_aligner = Qwen3ForcedAlignerWrapper(
+                    max_audio_seconds=config.qwen3_max_audio_seconds
+                )
+                self._qwen3_aligner = qwen_aligner
+
+                if self._check_cancelled():
+                    return
+
+                # Step 4: Align dialogues with Qwen3
+                self.progress.emit(50, "Qwen3 대사 정렬 중...")
+                aligned = qwen_aligner.align_all(
+                    dialogues,
+                    self.speaker_audio_map,
+                    language=config.whisper_language,
+                )
+            else:
+                # Step 3: Transcribe audio files (Whisper)
+                self.progress.emit(20, "Whisper 모델 로딩 중...")
+                self._transcriber = Transcriber()
+
+                # Check for cancellation after model loading
+                if self._check_cancelled():
+                    return
+
+                total_speakers = len(self.speaker_audio_map)
+                for i, (speaker, audio_path) in enumerate(self.speaker_audio_map.items()):
+                    if audio_path:
+                        progress = 20 + int((i / total_speakers) * 25)
+                        self.progress.emit(progress, f"Whisper 변환 중: {speaker}...")
+                        # Get configured language
+                        whisper_lang = config.whisper_language
+                        if whisper_lang == "auto":
+                            whisper_lang = None
+                            
+                        transcriptions[speaker] = self._transcriber.transcribe(
+                            audio_path, 
+                            language=whisper_lang,
+                            initial_prompt=initial_prompt
                         )
                         
-                        # Update segment with refined boundaries
-                        segment.start_time = refined_start
-                        segment.end_time = refined_end
+                        # Check for cancellation after each speaker
+                        if self._check_cancelled():
+                            return
+
+                # Step 4: Align dialogues
+                self.progress.emit(50, "대사 정렬 중...")
+                aligner = Aligner()
+                aligned = aligner.align_all(dialogues, transcriptions)
+            
+            # Check for cancellation before VAD/padding
+            if self._check_cancelled():
+                return
+
+            if config.use_qwen3_forced_aligner:
+                # Apply padding only (no VAD) for Qwen3
+                padding_sec = max(0.0, float(config.vad_padding_ms) / 1000.0)
+                if padding_sec > 0:
+                    speaker_durations: dict[str, float] = {}
+                    for speaker, audio_path in self.speaker_audio_map.items():
+                        if audio_path:
+                            try:
+                                audio = AudioSegment.from_file(audio_path)
+                                speaker_durations[speaker] = float(len(audio)) / 1000.0
+                            except Exception as e:
+                                print(f"Padding duration read failed for {speaker}: {e}")
+
+                    for segment in aligned:
+                        speaker = segment.dialogue.speaker
+                        duration = speaker_durations.get(speaker, None)
+                        start_time = max(0.0, segment.start_time - padding_sec)
+                        if duration is not None:
+                            end_time = min(duration, segment.end_time + padding_sec)
+                        else:
+                            end_time = segment.end_time + padding_sec
+
+                        segment.start_time = start_time
+                        segment.end_time = end_time
+            else:
+                # Step 5: VAD Refinement - refine segment boundaries with Silero VAD
+                self.progress.emit(60, "VAD로 경계 보정 중...")
+                self._vad = VADProcessor()
+
+                # Load speaker audio files for VAD
+                speaker_audio: dict[str, AudioSegment] = {}
+                for speaker, audio_path in self.speaker_audio_map.items():
+                    if audio_path:
+                        speaker_audio[speaker] = AudioSegment.from_file(audio_path)
+
+                # Refine each aligned segment with VAD
+                # Track previous end time per speaker to avoid overlap
+                prev_end_by_speaker: dict[str, float] = {}
+
+                total_segments = len(aligned)
+                for i, segment in enumerate(aligned):
+                    if i % 10 == 0:  # Update progress every 10 segments
+                        progress = 60 + int((i / total_segments) * 25)
+                        self.progress.emit(progress, f"VAD 보정 중 ({i+1}/{total_segments})...")
+                    
+                    speaker = segment.dialogue.speaker
+                    if speaker in speaker_audio:
+                        audio = speaker_audio[speaker]
                         
-                        # Store raw voice end (without padding) for next iteration
-                        # This allows next segment's analysis to start closer to actual voice end
-                        prev_end_by_speaker[speaker] = raw_voice_end
-                    except Exception as e:
-                        # If VAD fails, keep original boundaries
-                        print(f"VAD refinement failed for segment {i}: {e}")
-                        prev_end_by_speaker[speaker] = segment.end_time
+                        # Get previous end time for this speaker
+                        prev_end = prev_end_by_speaker.get(speaker, None)
+                        
+                        # Refine boundaries using VAD with previous segment constraint
+                        try:
+                            refined_start, refined_end, raw_voice_end = self._vad.trim_segment_boundaries(
+                                audio,
+                                segment.start_time,
+                                segment.end_time,
+                                prev_end_time=prev_end
+                            )
+                            
+                            # Update segment with refined boundaries
+                            segment.start_time = refined_start
+                            segment.end_time = refined_end
+                            
+                            # Store raw voice end (without padding) for next iteration
+                            # This allows next segment's analysis to start closer to actual voice end
+                            prev_end_by_speaker[speaker] = raw_voice_end
+                        except Exception as e:
+                            # If VAD fails, keep original boundaries
+                            print(f"VAD refinement failed for segment {i}: {e}")
+                            prev_end_by_speaker[speaker] = segment.end_time
 
             # Step 6: Build result
             self.progress.emit(90, "결과 생성 중...")
@@ -538,6 +588,13 @@ class ProcessingThread(QThread):
                     del self._vad.model
                 del self._vad
                 self._vad = None
+
+            # Delete Qwen3 aligner model
+            if hasattr(self, '_qwen3_aligner') and self._qwen3_aligner is not None:
+                if hasattr(self._qwen3_aligner, 'model'):
+                    del self._qwen3_aligner.model
+                del self._qwen3_aligner
+                self._qwen3_aligner = None
             
             # Force garbage collection
             gc.collect()

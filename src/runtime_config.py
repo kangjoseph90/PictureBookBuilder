@@ -13,6 +13,8 @@ from config import (
     USE_STABLE_TS,
     USE_INITIAL_PROMPT,
     WHISPER_LANGUAGE,
+    USE_QWEN3_FORCED_ALIGNER,
+    QWEN3_MAX_AUDIO_SECONDS,
     VAD_PADDING_MS,
     DEFAULT_GAP_SECONDS,
     SUBTITLE_DEFAULTS,
@@ -52,6 +54,8 @@ class RuntimeConfig:
     whisper_language: str = WHISPER_LANGUAGE  # 'ko', 'en', or 'auto'
     use_stable_ts: bool = USE_STABLE_TS
     use_initial_prompt: bool = USE_INITIAL_PROMPT  # 스크립트 기반 initial prompt 사용 여부
+    use_qwen3_forced_aligner: bool = USE_QWEN3_FORCED_ALIGNER  # Experimental
+    qwen3_max_audio_seconds: float = QWEN3_MAX_AUDIO_SECONDS
     
     # Audio settings
     vad_padding_ms: int = VAD_PADDING_MS
@@ -119,6 +123,8 @@ class RuntimeConfig:
         self.whisper_language = WHISPER_LANGUAGE
         self.use_stable_ts = USE_STABLE_TS
         self.use_initial_prompt = USE_INITIAL_PROMPT
+        self.use_qwen3_forced_aligner = USE_QWEN3_FORCED_ALIGNER
+        self.qwen3_max_audio_seconds = QWEN3_MAX_AUDIO_SECONDS
         self.vad_padding_ms = VAD_PADDING_MS
         self.default_gap_seconds = DEFAULT_GAP_SECONDS
         self.subtitle_auto_params = True
