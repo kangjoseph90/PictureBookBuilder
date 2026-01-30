@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView,
     QLineEdit, QPlainTextEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QFileSystemWatcher, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPalette, QFontMetrics
 from typing import TYPE_CHECKING
 
@@ -652,6 +652,15 @@ class MainWindow(QMainWindow):
 
         # State management for non-undoable changes (e.g. script/audio mapping)
         self._manual_modification_flag = False
+
+        # File watcher for image directory
+        self.image_watcher = QFileSystemWatcher(self)
+        self.image_watcher.directoryChanged.connect(self._on_directory_changed)
+        
+        # Timer for debouncing file updates
+        self.image_update_timer = QTimer(self)
+        self.image_update_timer.setSingleShot(True)
+        self.image_update_timer.timeout.connect(self._on_image_update_timeout)
 
         self._setup_menu_bar()
         self._setup_ui()
@@ -1310,6 +1319,12 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "이미지 폴더 선택")
         if path:
             self.image_folder = path
+            
+            # Setup file watcher
+            if self.image_watcher.directories():
+                self.image_watcher.removePaths(self.image_watcher.directories())
+            self.image_watcher.addPath(path)
+            
             self._populate_image_list(path)
             
             # Enable reload action
@@ -1330,6 +1345,29 @@ class MainWindow(QMainWindow):
             
             self._populate_image_list(self.image_folder)
             self.statusBar().showMessage(f"이미지 폴더를 다시 불러왔습니다: {self.image_folder}")
+    
+    def _on_directory_changed(self, path):
+        """Handle directory change notification"""
+        # Restart timer to debounce (wait for copy operations to finish)
+        self.image_update_timer.start(1000)
+    
+    def _on_image_update_timeout(self):
+        """Update image list after debounce"""
+        if self.image_folder and os.path.exists(self.image_folder):
+            # Save current selection if possible (by filename)
+            selected_items = self.image_list.selectedItems()
+            selected_files = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+            
+            self._populate_image_list(self.image_folder)
+            
+            # Restore selection
+            if selected_files:
+                for i in range(self.image_list.count()):
+                    item = self.image_list.item(i)
+                    if item.data(Qt.ItemDataRole.UserRole) in selected_files:
+                        item.setSelected(True)
+            
+            self.statusBar().showMessage(f"이미지 목록이 갱신되었습니다.", 3000)
     
     def _populate_image_list(self, folder_path: str):
         """Populate image list with thumbnails (loads all upfront, natural sorting)"""
