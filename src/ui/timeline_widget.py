@@ -11,7 +11,7 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, 
-    QLabel, QMenu, QScrollBar
+    QLabel, QMenu, QScrollBar, QToolTip
 )
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QTimer, QMimeData, QUrl
 from PyQt6.QtGui import (
@@ -91,6 +91,12 @@ class TimelineCanvas(QWidget):
         # Undo state for resize
         self.resize_start_state: Optional[TimelineClip] = None
         self.linked_clip_start_state: Optional[TimelineClip] = None
+
+        # Volume dragging state
+        self.dragging_volume: bool = False
+        self.volume_drag_start_val: float = 0.0
+        self.volume_drag_start_y: float = 0.0
+        self.volume_clip_id: Optional[str] = None
 
         # Colors
         self.speaker_colors = [
@@ -609,8 +615,10 @@ class TimelineCanvas(QWidget):
         painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
         
         # Draw waveform only for audio clips (if not missing)
-        if not is_missing and clip.clip_type == "audio" and clip.waveform and len(clip.waveform) > 0:
-            self._draw_waveform(painter, clip, x, y, width, height)
+        if not is_missing and clip.clip_type == "audio":
+            if clip.waveform and len(clip.waveform) > 0:
+                self._draw_waveform(painter, clip, x, y, width, height)
+            self._draw_volume_line(painter, clip, x, y, width, height)
         
         # Draw thumbnail for image clips (if not missing)
         if not is_missing and clip.clip_type == "image" and clip.image_path:
@@ -756,6 +764,35 @@ class TimelineCanvas(QWidget):
                 # For debugging:
                 # print(f"[Timeline] Drove thumb: {Path(clip.image_path).name}")
 
+    def _draw_volume_line(self, painter: QPainter, clip: TimelineClip,
+                          x: float, y: float, width: float, height: float):
+        """Draw interactive volume line on audio clip"""
+        vol = getattr(clip, 'volume', 1.0)
+        # Map 0.0 -> bottom, 1.0 -> 50%, 2.0 -> top
+        y_ratio = 1.0 - (vol / 2.0)
+        line_y = y + height * y_ratio
+
+        # Clamp visual line to clip bounds
+        line_y = max(y, min(y + height, line_y))
+
+        # Draw line
+        painter.save()
+        painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
+        painter.drawLine(int(x), int(line_y), int(x + width), int(line_y))
+
+        # Draw text if not 1.0
+        if abs(vol - 1.0) > 0.01 and width > 30:
+            painter.setFont(QFont("Arial", 7))
+            label = f"{vol:.2f}x"
+            # Draw above line
+            text_y = int(line_y - 2)
+            if text_y < y + 12: # If too close to top, draw below
+                text_y = int(line_y + 10)
+
+            painter.setPen(QPen(QColor(255, 255, 255, 255)))
+            painter.drawText(int(x + 5), text_y, label)
+        painter.restore()
+
     def _draw_waveform(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
         """Draw the waveform visualization for a clip - optimized with caching"""
@@ -854,6 +891,25 @@ class TimelineCanvas(QWidget):
             self.update()
             return
         
+        # Check for volume line interaction
+        if event.button() == Qt.MouseButton.LeftButton:
+            vol_clip = self.get_clip_at(x, y)
+            if vol_clip and vol_clip.clip_type == "audio":
+                vol = getattr(vol_clip, 'volume', 1.0)
+                clip_y = self.get_track_y(vol_clip.track)
+                # Map 0.0 -> bottom, 1.0 -> 50%, 2.0 -> top
+                line_y = clip_y + self.track_height * (1.0 - vol / 2.0)
+                line_y = max(clip_y, min(clip_y + self.track_height, line_y))
+
+                if abs(y - line_y) <= 5:
+                    self.dragging_volume = True
+                    self.volume_clip_id = vol_clip.id
+                    self.volume_drag_start_val = vol
+                    self.volume_drag_start_y = y
+                    self.drag_start_state = {vol_clip.id: copy.deepcopy(vol_clip)}
+                    self.update()
+                    return
+
         # Check for edge resize first
         edge_clip, edge = self.get_clip_edge_at(x, y)
         if edge_clip and edge and event.button() == Qt.MouseButton.LeftButton:
@@ -958,6 +1014,29 @@ class TimelineCanvas(QWidget):
             self.playhead_time = max(0, new_time)
             self.playhead_moved.emit(self.playhead_time)
             self.update()
+            return
+
+        # Handle volume dragging
+        if self.dragging_volume and self.volume_clip_id:
+            clip = next((c for c in self.clips if c.id == self.volume_clip_id), None)
+            if clip:
+                dy = self.volume_drag_start_y - y # Up is positive
+                # Height = 2.0 volume change
+                d_vol = (dy / self.track_height) * 2.0
+                new_vol = self.volume_drag_start_val + d_vol
+                new_vol = max(0.0, min(2.0, new_vol))
+
+                # Snap to 1.0
+                if abs(new_vol - 1.0) < 0.05:
+                    new_vol = 1.0
+
+                if abs(clip.volume - new_vol) > 0.001:
+                    clip.volume = new_vol
+                    self.clip_editing.emit(clip.id)
+                    self._background_dirty = True
+                    self.update()
+
+                    QToolTip.showText(event.globalPosition().toPoint(), f"Volume: {new_vol:.2f}x")
             return
         
         # Handle edge resizing - simplified offset-based logic
@@ -1152,13 +1231,44 @@ class TimelineCanvas(QWidget):
         edge_clip, edge = self.get_clip_edge_at(x, y)
         if edge_clip and edge:
             self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
-        else:
-            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            return
+
+        # Check volume line hover
+        vol_clip = self.get_clip_at(x, y)
+        if vol_clip and vol_clip.clip_type == "audio":
+             vol = getattr(vol_clip, 'volume', 1.0)
+             clip_y = self.get_track_y(vol_clip.track)
+             line_y = clip_y + self.track_height * (1.0 - vol / 2.0)
+             line_y = max(clip_y, min(clip_y + self.track_height, line_y))
+
+             if abs(y - line_y) <= 5:
+                 self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+                 return
+
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
     
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release"""
         if self.dragging_playhead:
             self.dragging_playhead = False
+            return
+
+        if self.dragging_volume:
+            if self.volume_clip_id:
+                old_clip = self.drag_start_state.get(self.volume_clip_id)
+                current_clip = next((c for c in self.clips if c.id == self.volume_clip_id), None)
+
+                if old_clip and current_clip and abs(old_clip.volume - current_clip.volume) > 0.001:
+                    modifications = [(self.volume_clip_id, old_clip, copy.deepcopy(current_clip))]
+                    self.history_command_generated.emit('modify', {'modifications': modifications, 'description': f'Adjust volume {current_clip.name}'})
+
+                self.clip_edited.emit(self.volume_clip_id)
+
+            self.dragging_volume = False
+            self.volume_clip_id = None
+            self.drag_start_state.clear()
+            self._background_dirty = True
+            self.update()
             return
         
         if self.resizing_clip:

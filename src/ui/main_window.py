@@ -1294,7 +1294,8 @@ class MainWindow(QMainWindow):
                     timeline_end=clip.start + clip.duration,
                     source_offset=clip.offset,
                     source_path=speaker_audio_map.get(clip.speaker, ""),
-                    duration=clip.duration
+                    duration=clip.duration,
+                    volume=clip.volume
                 ))
             
             # Set up the AudioMixer
@@ -1365,7 +1366,8 @@ class MainWindow(QMainWindow):
             timeline_end=clip.start + clip.duration,
             source_offset=clip.offset,
             source_path=speaker_audio_map.get(clip.speaker, ""),
-            duration=clip.duration
+            duration=clip.duration,
+            volume=clip.volume
         )
         self.preview_widget.update_audio_clip(scheduled_clip)
 
@@ -1439,7 +1441,8 @@ class MainWindow(QMainWindow):
                 timeline_end=clip.start + clip.duration,
                 source_offset=clip.offset,
                 source_path=speaker_audio_map.get(clip.speaker, ""),
-                duration=clip.duration
+                duration=clip.duration,
+                volume=clip.volume
             )
             self.preview_widget.update_audio_clip(scheduled_clip)
             
@@ -1470,7 +1473,8 @@ class MainWindow(QMainWindow):
                     timeline_end=clip.start + clip.duration,
                     source_offset=clip.offset,
                     source_path=speaker_audio_map.get(clip.speaker, ""),
-                    duration=clip.duration
+                    duration=clip.duration,
+                    volume=clip.volume
                 )
                 self.preview_widget.update_audio_clip(scheduled_clip)
             
@@ -3225,6 +3229,7 @@ class MainWindow(QMainWindow):
                 'offset': clip.offset,  # Simplified: single offset field
                 'segment_index': clip.segment_index,
                 'speaker': clip.speaker,  # Save speaker for audio clips
+                'volume': getattr(clip, 'volume', 1.0),
             }
             
             # Add type-specific data
@@ -3341,7 +3346,8 @@ class MainWindow(QMainWindow):
                 segment_index=clip_data.get('segment_index', -1),
                 image_path=image_path,
                 speaker=clip_data.get('speaker', ''),  # Restore speaker
-                words=words
+                words=words,
+                volume=clip_data.get('volume', 1.0)
             )
             clips.append(clip)
         

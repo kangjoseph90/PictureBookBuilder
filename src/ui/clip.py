@@ -27,6 +27,7 @@ class TimelineClip:
     clip_type: str = "audio"  # "audio", "image", or "subtitle"
     waveform: list = field(default_factory=list)  # Normalized amplitude samples (0-1)
     image_path: Optional[str] = None  # Path to image file for thumbnails
+    volume: float = 1.0  # Audio volume multiplier (1.0 = original)
 
     # Source audio info (for trimming/editing)
     offset: float = 0.0        # Offset in original audio (seconds)
