@@ -466,9 +466,15 @@ class VideoRenderer:
                     dur = float(clip.duration)
                     delay_ms = int(float(clip.start) * 1000)
                     label = f"a{i}"
+                    # Check for volume
+                    vol = getattr(clip, 'volume', 1.0)
+                    volume_filter = ""
+                    if abs(vol - 1.0) > 0.001:
+                        volume_filter = f"volume={vol},"
+
                     filter_lines.append(
                         f"[{idx}:a]atrim=start={offset:.6f}:duration={dur:.6f},"
-                        f"asetpts=PTS-STARTPTS,adelay={delay_ms}|{delay_ms}[{label}]"
+                        f"asetpts=PTS-STARTPTS,{volume_filter}adelay={delay_ms}|{delay_ms}[{label}]"
                     )
                     audio_labels.append(f"[{label}]")
 

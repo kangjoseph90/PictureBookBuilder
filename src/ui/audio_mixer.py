@@ -23,6 +23,7 @@ class ScheduledClip:
     source_offset: float   # Where to start in source audio (seconds)
     source_path: str       # Path to source audio file
     duration: float        # Duration to play (seconds)
+    volume: float = 1.0    # Volume multiplier
     
     @property
     def timeline_duration(self) -> float:
@@ -234,9 +235,18 @@ class AudioMixer(QObject):
         self._volume = max(0.0, min(1.0, volume))
         
         # Update volume on all cached players
+        # First, reset all to global volume
         for speaker, (player, audio_output, _) in self._player_cache.items():
             audio_output.setVolume(self._volume)
             
+        # Then override for currently active clips to include their volume multiplier
+        for clip in self.clips:
+            if clip.clip_id in self._active_players:
+                # Find the player associated with this clip (via speaker cache usually, but active_players has ref)
+                player, audio_output = self._active_players[clip.clip_id]
+                effective_vol = min(1.0, self._volume * clip.volume)
+                audio_output.setVolume(effective_vol)
+
     def _update_position(self):
         """Timer callback to update position and manage clips"""
         import time
@@ -355,6 +365,10 @@ class AudioMixer(QObject):
             
         player, audio_output, seek_correction = cached
         
+        # Apply volume (clamped to 1.0)
+        effective_vol = min(1.0, self._volume * clip.volume)
+        audio_output.setVolume(effective_vol)
+
         # Calculate where in the source audio to start
         time_into_clip = current_position - clip.timeline_start
         source_position_ms = int((clip.source_offset + time_into_clip) * 1000)
