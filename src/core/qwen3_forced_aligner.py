@@ -116,15 +116,40 @@ class Qwen3ForcedAlignerWrapper:
             return "Chinese"
         return "English"
 
-    def _tokenize(self, text: str) -> list[str]:
-        text = text.strip()
+    def _normalize_text(self, text: str) -> str:
+        """Normalize text for comparison - lowercase and remove all non-alphanumeric characters."""
         if not text:
-            return []
-        # If there is no whitespace but CJK is present, split into characters
-        has_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
-        if has_cjk and not re.search(r"\s", text):
-            return list(text)
-        return text.split()
+            return ""
+        return re.sub(r'[^\w]|_', '', text.lower())
+
+    def _find_dialogue_boundary(
+        self, units: list[_Unit], dialogue_text: str, start_idx: int
+    ) -> int:
+        """Find where a dialogue ends in the unit list using text matching.
+        
+        Returns the end index (exclusive) of units belonging to this dialogue.
+        """
+        target = self._normalize_text(dialogue_text)
+        if not target:
+            return start_idx
+        
+        accumulated = ""
+        for i in range(start_idx, len(units)):
+            accumulated += self._normalize_text(units[i].text)
+            if accumulated == target:
+                return i + 1  # Match found
+            if len(accumulated) > len(target):
+                # Overshoot - fallback to closest length
+                break
+        
+        # Fallback: find index that reaches or exceeds target length
+        current_len = 0
+        for i in range(start_idx, len(units)):
+            current_len += len(self._normalize_text(units[i].text))
+            if current_len >= len(target):
+                return i + 1
+        
+        return len(units)
 
     def _units_from_results(self, results: Iterable) -> list[_Unit]:
         units: list[_Unit] = []
@@ -161,35 +186,34 @@ class Qwen3ForcedAlignerWrapper:
         if not units:
             return []
 
-        line_tokens = [self._tokenize(d.text) for d in dialogues]
-        line_counts = [len(toks) for toks in line_tokens]
-
         aligned_segments: list[AlignedSegment] = []
         unit_idx = 0
 
-        for dialogue, tokens, count in zip(dialogues, line_tokens, line_counts):
-            if count <= 0:
+        for dialogue in dialogues:
+            if not dialogue.text.strip():
                 continue
             if unit_idx >= len(units):
                 break
 
-            slice_units = units[unit_idx: unit_idx + count]
-            if not slice_units:
-                break
+            # Find dialogue boundary using text matching
+            end_idx = self._find_dialogue_boundary(units, dialogue.text, unit_idx)
+            
+            if end_idx <= unit_idx:
+                # print(f"[DEBUG] Could not find boundary for: '{dialogue.text[:30]}...'")
+                continue
 
-            unit_idx += len(slice_units)
+            slice_units = units[unit_idx:end_idx]
+            # print(f"[DEBUG] Dialogue matched: '{dialogue.text[:30]}...' -> units {unit_idx}-{end_idx}")
+            unit_idx = end_idx
 
+            # Use model units directly as words
             words: list[WordSegment] = []
-            for i, token in enumerate(tokens):
-                if i < len(slice_units):
-                    u = slice_units[i]
-                    words.append(WordSegment(
-                        text=token,
-                        start=u.start_time + time_offset,
-                        end=u.end_time + time_offset,
-                    ))
-                else:
-                    break
+            for u in slice_units:
+                words.append(WordSegment(
+                    text=u.text,
+                    start=u.start_time + time_offset,
+                    end=u.end_time + time_offset,
+                ))
 
             start_time = slice_units[0].start_time + time_offset
             end_time = slice_units[-1].end_time + time_offset
@@ -218,24 +242,25 @@ class Qwen3ForcedAlignerWrapper:
         chunk_count = max(1, int(math.ceil(total_duration / max_chunk_seconds)))
         chunk_duration = total_duration / chunk_count
 
-        token_counts = [len(self._tokenize(d.text)) for d in dialogues]
-        total_tokens = max(1, sum(token_counts))
+        # Use character count instead of token count
+        char_counts = [len(d.text) for d in dialogues]
+        total_chars = max(1, sum(char_counts))
 
         chunks: list[tuple[list[DialogueLine], float, float]] = []
         current_chunk: list[DialogueLine] = []
-        current_tokens = 0
-        token_target_per_chunk = total_tokens / chunk_count
+        current_chars = 0
+        char_target_per_chunk = total_chars / chunk_count
 
         for idx, d in enumerate(dialogues):
             current_chunk.append(d)
-            current_tokens += token_counts[idx]
+            current_chars += char_counts[idx]
 
-            if current_tokens >= token_target_per_chunk and len(chunks) < chunk_count - 1:
+            if current_chars >= char_target_per_chunk and len(chunks) < chunk_count - 1:
                 start_time = len(chunks) * chunk_duration
                 end_time = start_time + chunk_duration
                 chunks.append((current_chunk, start_time, end_time))
                 current_chunk = []
-                current_tokens = 0
+                current_chars = 0
 
         if current_chunk:
             start_time = len(chunks) * chunk_duration
@@ -286,21 +311,67 @@ class Qwen3ForcedAlignerWrapper:
             units = self._units_from_results(results[0])
             return self._map_units_to_dialogues(dialogues, units, time_offset=0.0)
 
-        # Chunk long audio to reduce peak memory usage
+        # Sequential processing with dialogue overlap
+        # Each chunk includes the last dialogue from previous chunk for timing calibration
         audio = AudioSegment.from_file(str(Path(audio_path)))
-        chunks = self._split_dialogues_by_duration(dialogues, duration, self.max_audio_seconds)
-
-        aligned_segments: list[AlignedSegment] = []
+        
+        # Split dialogues into chunks by token count (estimate ~90s worth per chunk)
+        text_chunk_seconds = 90.0
+        base_chunks = self._split_dialogues_by_duration(dialogues, duration, text_chunk_seconds)
+        
+        # print(f"[DEBUG] Total duration: {duration:.2f}s, Total dialogues: {len(dialogues)}")
+        # print(f"[DEBUG] Base chunks: {len(base_chunks)} (will add overlap)")
+        
+        # Build chunks with overlap: each chunk (except first) includes last dialogue from previous
+        dialogue_chunks_with_overlap: list[tuple[list[DialogueLine], DialogueLine | None]] = []
+        for i, (chunk_dialogues, _est_start, _est_end) in enumerate(base_chunks):
+            if i == 0:
+                # First chunk: no overlap dialogue
+                dialogue_chunks_with_overlap.append((chunk_dialogues, None))
+            else:
+                # Get last dialogue from previous chunk
+                prev_chunk_dialogues = base_chunks[i - 1][0]
+                overlap_dialogue = prev_chunk_dialogues[-1] if prev_chunk_dialogues else None
+                # Prepend overlap dialogue to current chunk
+                if overlap_dialogue:
+                    chunk_with_overlap = [overlap_dialogue] + chunk_dialogues
+                else:
+                    chunk_with_overlap = chunk_dialogues
+                dialogue_chunks_with_overlap.append((chunk_with_overlap, overlap_dialogue))
+        
+        all_units: list[_Unit] = []
         temp_files: list[str] = []
+        
+        # Track position info from previous chunk
+        # For next chunk, we start audio from overlap dialogue's START (not end)
+        prev_overlap_dialogue_start: float | None = None  # Absolute start time of last dialogue in prev chunk
 
         try:
-            for chunk_dialogues, start_sec, end_sec in chunks:
+            for chunk_idx, (chunk_dialogues, overlap_dialogue) in enumerate(dialogue_chunks_with_overlap):
                 chunk_text = " ".join(d.text for d in chunk_dialogues if d.text).strip()
                 if not chunk_text:
                     continue
-
-                start_ms = max(0, int(start_sec * 1000))
-                end_ms = min(len(audio), int(end_sec * 1000))
+                
+                # Determine audio start:
+                # - First chunk: start from 0
+                # - Other chunks: start from overlap dialogue's START time
+                if chunk_idx == 0:
+                    audio_start = 0.0
+                else:
+                    # Start from where overlap dialogue begins (from previous chunk's tracking)
+                    audio_start = prev_overlap_dialogue_start if prev_overlap_dialogue_start is not None else 0.0
+                
+                # End with enough padding to capture all the text
+                audio_end = min(duration, audio_start + self.max_audio_seconds)
+                
+                # print(f"\n[DEBUG] === Chunk {chunk_idx + 1}/{len(dialogue_chunks_with_overlap)} ===")
+                # print(f"[DEBUG] Dialogues in chunk: {len(chunk_dialogues)}" + 
+                #       (f" (first is overlap: '{overlap_dialogue.text[:30]}...')" if overlap_dialogue else ""))
+                # print(f"[DEBUG] Audio range: {audio_start:.2f}s - {audio_end:.2f}s")
+                # print(f"[DEBUG] Text preview: {chunk_text[:100]}...")
+                
+                start_ms = max(0, int(audio_start * 1000))
+                end_ms = min(len(audio), int(audio_end * 1000))
                 segment = audio[start_ms:end_ms]
 
                 fd, tmp_path = tempfile.mkstemp(prefix="qwen3_fa_", suffix=".wav")
@@ -314,12 +385,66 @@ class Qwen3ForcedAlignerWrapper:
                     language=lang,
                 )
                 if not results or not results[0]:
+                    # print(f"[DEBUG] No results for chunk {chunk_idx + 1}")
                     continue
 
-                units = self._units_from_results(results[0])
-                aligned_segments.extend(
-                    self._map_units_to_dialogues(chunk_dialogues, units, time_offset=start_sec)
-                )
+                chunk_units = self._units_from_results(results[0])
+                # print(f"[DEBUG] Model returned {len(chunk_units)} units")
+                
+                # Offset = audio_start (where this chunk's audio begins in full file)
+                effective_offset = audio_start
+                overlap_end_idx = 0
+                
+                if overlap_dialogue and chunk_units:
+                    # Find overlap dialogue boundary using text matching
+                    overlap_end_idx = self._find_dialogue_boundary(
+                        chunk_units, overlap_dialogue.text, 0
+                    )
+                    # print(f"[DEBUG] Overlap dialogue ends at unit {overlap_end_idx}")
+                    
+                    if overlap_end_idx > 0 and overlap_end_idx <= len(chunk_units):
+                        overlap_last_unit = chunk_units[overlap_end_idx - 1]
+                        # print(f"[DEBUG] Overlap dialogue ends @ {overlap_last_unit.end_time:.2f}s (chunk-relative)")
+                
+                if chunk_units:
+                    # print(f"[DEBUG] First unit: '{chunk_units[0].text}' @ {chunk_units[0].start_time:.2f}s (chunk-relative)")
+                    # print(f"[DEBUG] Last unit: '{chunk_units[-1].text}' @ {chunk_units[-1].end_time:.2f}s (chunk-relative)")
+                    
+                    # Track the LAST dialogue's START time for next chunk's overlap
+                    # Find boundaries for all dialogues to locate last dialogue start
+                    last_dialogue = chunk_dialogues[-1]
+                    
+                    # Find last dialogue's start by finding boundaries up to it
+                    unit_idx = 0
+                    for d in chunk_dialogues[:-1]:
+                        unit_idx = self._find_dialogue_boundary(chunk_units, d.text, unit_idx)
+                    
+                    # unit_idx now points to where last dialogue starts
+                    if unit_idx < len(chunk_units):
+                        last_dialogue_first_unit = chunk_units[unit_idx]
+                        prev_overlap_dialogue_start = audio_start + last_dialogue_first_unit.start_time
+                        # print(f"[DEBUG] Last dialogue starts at unit {unit_idx}: '{last_dialogue_first_unit.text}' @ {last_dialogue_first_unit.start_time:.2f}s")
+                        # print(f"[DEBUG] Next chunk will start audio at: {prev_overlap_dialogue_start:.2f}s (overlap dialogue start)")
+                    else:
+                        # Fallback: use last unit's end time
+                        prev_overlap_dialogue_start = audio_start + chunk_units[-1].end_time
+                        # print(f"[DEBUG] Fallback: Next chunk starts at: {prev_overlap_dialogue_start:.2f}s")
+                
+                # Add offset to convert chunk-relative to absolute time
+                # Skip overlap units (they were already added in previous chunk)
+                units_to_add = chunk_units[overlap_end_idx:] if overlap_dialogue else chunk_units
+                
+                for u in units_to_add:
+                    all_units.append(_Unit(
+                        text=u.text,
+                        start_time=u.start_time + effective_offset,
+                        end_time=u.end_time + effective_offset,
+                    ))
+                
+                if units_to_add:
+                    pass
+                    # print(f"[DEBUG] Added {len(units_to_add)} units (skipped {overlap_end_idx} overlap)")
+                    # print(f"[DEBUG] After offset: First @ {units_to_add[0].start_time + effective_offset:.2f}s, Last @ {units_to_add[-1].end_time + effective_offset:.2f}s (absolute)")
         finally:
             for p in temp_files:
                 try:
@@ -327,7 +452,11 @@ class Qwen3ForcedAlignerWrapper:
                 except OSError:
                     pass
 
-        return aligned_segments
+        # Sort units by start time
+        all_units.sort(key=lambda u: u.start_time)
+        # print(f"\n[DEBUG] Total units collected: {len(all_units)}")
+        
+        return self._map_units_to_dialogues(dialogues, all_units, time_offset=0.0)
 
     def align_all(
         self,
