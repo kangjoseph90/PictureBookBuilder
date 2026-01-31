@@ -78,14 +78,15 @@ _player_cache: dict[speaker, (QMediaPlayer, QAudioOutput, seek_correction)]
 ```
 
 **Seek Correction:**
-Qt/FFmpeg has a bug with non-standard sample rates. For audio files with `framerate < 44100`:
+Qt/FFmpeg has a bug with non-standard sample rates (e.g. 24kHz), but it appears to affect only certain bit depths (like 32-bit float/int).
+For audio files with `framerate < 44100` **AND** `sampwidth != 2` (not 16-bit):
 
 ```python
 seek_correction = framerate / 48000.0
 corrected_position = position_ms * seek_correction
 ```
 
-This compensates for the backend assuming 48kHz.
+This compensates for the backend assuming 48kHz. 16-bit files seem to work correctly without correction.
 
 ---
 

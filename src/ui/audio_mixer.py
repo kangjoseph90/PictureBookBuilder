@@ -327,9 +327,11 @@ class AudioMixer(QObject):
             import contextlib
             with contextlib.closing(wave.open(audio_path, 'rb')) as wf:
                 framerate = wf.getframerate()
+                sampwidth = wf.getsampwidth()
                 # If sample rate is significantly lower than standard (44.1/48k),
                 # the backend likely calculates seek offsets using 48k logic.
-                if framerate < 44100:
+                # However, 16-bit files (sampwidth=2) seem to work correctly without correction.
+                if framerate < 44100 and sampwidth != 2:
                     seek_correction = framerate / 48000.0
         except Exception:
             pass
