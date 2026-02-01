@@ -1035,7 +1035,9 @@ class TimelineCanvas(QWidget):
 
                 if abs(clip.volume - new_vol) > 0.001:
                     clip.volume = new_vol
-                    self.clip_editing.emit(clip.id)
+                    # Note: We do NOT emit clip_editing here to prevent flooding the backend
+                    # with costly re-generation of boosted audio files during drag.
+                    # The change is committed on mouseRelease via clip_edited.
                     self._background_dirty = True
                     self.update()
 
