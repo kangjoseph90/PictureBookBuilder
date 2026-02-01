@@ -10,7 +10,7 @@ WHISPER_MODEL = "medium" #"large-v3"
 USE_STABLE_TS = True  # True: stable-ts (정확한 타이밍), False: faster-whisper (빠른 속도)
 USE_INITIAL_PROMPT = True  # True: 스크립트 기반 initial prompt 사용, False: prompt 없이 인식
 WHISPER_LANGUAGE = "auto"  # 'ko', 'en', or 'auto'
-USE_QWEN3_FORCED_ALIGNER = False  # Experimental: use Qwen3 ForcedAligner instead of Whisper+aligner
+USE_QWEN3_FORCED_ALIGNER = True  # Experimental: use Qwen3 ForcedAligner instead of Whisper+aligner
 QWEN3_MAX_AUDIO_SECONDS = 120.0  # Experimental: max seconds per FA chunk
 
 if torch.cuda.is_available():

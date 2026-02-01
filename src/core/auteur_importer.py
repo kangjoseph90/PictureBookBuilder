@@ -8,13 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-try:
-    from rapidfuzz import fuzz
-    RAPIDFUZZ_AVAILABLE = True
-except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
-    fuzz = None
-
 
 @dataclass
 class AuteurHint:
@@ -42,6 +35,24 @@ def normalize_text(text: str) -> str:
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\s+', '', text)  # Remove ALL whitespace for tighter matching
     return text.strip().lower()
+
+
+def is_stage_direction(text: str) -> bool:
+    """Check if text is a stage direction (non-spoken, like actions in parentheses)
+    
+    Examples of stage directions:
+    - "(Silent Reaction to the news)"
+    - "(The brother walks away)"
+    - "(Pause)"
+    """
+    text = text.strip()
+    # Check if entire text is wrapped in parentheses
+    if text.startswith('(') and text.endswith(')'):
+        return True
+    # Check if text is wrapped in brackets
+    if text.startswith('[') and text.endswith(']'):
+        return True
+    return False
 
 
 def parse_covered_line(line: str) -> tuple[str, str]:
@@ -92,6 +103,10 @@ def load_auteur_project(file_path: str) -> list[AuteurHint]:
                 if not text:
                     continue
                 
+                # Skip stage directions (they're not in the audio)
+                if is_stage_direction(text):
+                    continue
+                
                 hints.append(AuteurHint(
                     speaker=speaker,
                     text=normalize_text(text),
@@ -134,97 +149,126 @@ def find_image_file(folder: str, scene_id: int, shot_id: int) -> Optional[str]:
 def match_hints_to_clips(
     hints: list[AuteurHint],
     clips: list,  # TimelineClip list
-    similarity_threshold: float = 70.0
 ) -> list[ImagePlacement]:
-    """Match Auteur hints to PBB timeline clips using sliding window fuzzy matching
+    """Match Auteur hints to PBB timeline clips using exact matching with DP optimization
+    
+    Algorithm:
+    1. Collect all words from clips with timeline positions
+    2. Filter valid hints (skip stage directions, non-existent speakers)
+    3. Find exact matches for each hint
+    4. Use DP to select optimal non-overlapping matches
     
     Args:
         hints: List of AuteurHint from Auteur project
-        clips: List of TimelineClip from PBB timeline (audio/subtitle clips)
-        similarity_threshold: Minimum fuzzy match score (0-100)
+        clips: List of TimelineClip from PBB timeline
         
     Returns:
         List of ImagePlacement with matched time ranges
     """
-    if not RAPIDFUZZ_AVAILABLE:
-        print("Warning: rapidfuzz not available, cannot perform matching")
-        return []
-    
-    # Group clips by speaker
-    speaker_words = {}  # {speaker: [(normalized_text, start, end, word_obj), ...]}
+    # Step 1: Collect all words from clips
+    all_words = []
     
     for clip in clips:
         if clip.clip_type not in ('audio', 'subtitle'):
             continue
         
         speaker = clip.speaker or ""
-        if speaker not in speaker_words:
-            speaker_words[speaker] = []
+        clip_start = clip.start
+        clip_offset = getattr(clip, 'offset', 0.0)
         
-        # Collect words from clip
         for word in (clip.words or []):
             word_text = word.text if hasattr(word, 'text') else str(word)
-            word_start = word.start if hasattr(word, 'start') else clip.start
-            word_end = word.end if hasattr(word, 'end') else clip.end
+            word_start = (word.start if hasattr(word, 'start') else 0)
+            word_end = (word.end if hasattr(word, 'end') else 0)
             
-            speaker_words[speaker].append({
+            # Convert to timeline position
+            timeline_start = clip_start + (word_start - clip_offset)
+            timeline_end = clip_start + (word_end - clip_offset)
+            
+            all_words.append({
                 'text': normalize_text(word_text),
-                'raw_text': word_text,
-                'start': word_start,
-                'end': word_end
+                'start': timeline_start,
+                'end': timeline_end,
+                'speaker': speaker
             })
     
-    placements = []
+    all_words.sort(key=lambda w: w['start'])
     
-    for hint in hints:
-        # Find matching speaker's word pool
-        words = speaker_words.get(hint.speaker, [])
-        
-        if not words:
-            # Try empty speaker as fallback
-            words = speaker_words.get("", [])
-        
-        if not words:
+    # Get available speakers
+    available_speakers = set(w['speaker'] for w in all_words if w['speaker'])
+    
+    # Step 2: Find exact matches for each valid hint
+    all_matches = []  # [(hint_idx, hint, start_word_idx, end_word_idx), ...]
+    
+    for hint_idx, hint in enumerate(hints):
+        # Skip invalid hints
+        if not hint.text:
             continue
-        
-        # Sliding window search
-        best_match = None
-        best_score = 0
+        if hint.speaker and hint.speaker not in available_speakers:
+            continue
         
         target = hint.text
         target_len = len(target)
         
-        for start_idx in range(len(words)):
+        # Search for exact match
+        for start_idx in range(len(all_words)):
             concat = ""
             
-            for end_idx in range(start_idx, len(words)):
-                concat += words[end_idx]['text']
+            for end_idx in range(start_idx, min(start_idx + 50, len(all_words))):
+                concat += all_words[end_idx]['text']
                 
-                # Check if target is contained or similar
-                if target in concat:
-                    # Exact containment - high score
-                    score = 100 * (target_len / len(concat)) if concat else 0
-                else:
-                    # Fuzzy match
-                    score = fuzz.ratio(target, concat)
-                
-                if score > best_score and score >= similarity_threshold:
-                    best_score = score
-                    best_match = (start_idx, end_idx)
-                
-                # Early termination if concat is too long
-                if len(concat) > target_len * 2:
+                if concat == target:
+                    all_matches.append({
+                        'hint_idx': hint_idx,
+                        'hint': hint,
+                        'start_idx': start_idx,
+                        'end_idx': end_idx
+                    })
                     break
-        
-        if best_match:
-            start_idx, end_idx = best_match
-            placements.append(ImagePlacement(
-                scene_id=hint.scene_id,
-                shot_id=hint.shot_id,
-                start_time=words[start_idx]['start'],
-                end_time=words[end_idx]['end']
-            ))
+                
+                if len(concat) > target_len:
+                    break
     
+    if not all_matches:
+        return []
+    
+    # Step 3: DP for optimal non-overlapping selection
+    all_matches.sort(key=lambda m: m['end_idx'])
+    n = len(all_matches)
+    
+    dp_count = [1] * n  # Number of matches in optimal path ending at i
+    dp_prev = [-1] * n
+    
+    for i in range(n):
+        for j in range(i - 1, -1, -1):
+            if (all_matches[j]['end_idx'] < all_matches[i]['start_idx'] and 
+                all_matches[j]['hint_idx'] < all_matches[i]['hint_idx']):
+                if dp_count[j] + 1 > dp_count[i]:
+                    dp_count[i] = dp_count[j] + 1
+                    dp_prev[i] = j
+                break
+    
+    # Backtrack
+    best_end = max(range(n), key=lambda i: dp_count[i])
+    selected = []
+    idx = best_end
+    while idx >= 0:
+        selected.append(idx)
+        idx = dp_prev[idx]
+    selected.reverse()
+    
+    # Step 4: Build placements
+    placements = []
+    for sel_idx in selected:
+        m = all_matches[sel_idx]
+        placements.append(ImagePlacement(
+            scene_id=m['hint'].scene_id,
+            shot_id=m['hint'].shot_id,
+            start_time=all_words[m['start_idx']]['start'],
+            end_time=all_words[m['end_idx']]['end']
+        ))
+    
+    print(f"Matched {len(placements)} shots out of {len(hints)} hints")
     return placements
 
 
@@ -286,8 +330,7 @@ def process_auteur_import(
     auteur_file: str,
     image_folder: str,
     clips: list,
-    timeline_end: float,
-    similarity_threshold: float = 70.0
+    timeline_end: float
 ) -> list[ImagePlacement]:
     """Main entry point: load Auteur project and generate image placements
     
@@ -296,7 +339,6 @@ def process_auteur_import(
         image_folder: Path to folder containing n-m.ext images
         clips: List of TimelineClip from PBB
         timeline_end: End time of the timeline
-        similarity_threshold: Minimum fuzzy match score
         
     Returns:
         List of ImagePlacement with adjusted times and image paths
@@ -306,7 +348,7 @@ def process_auteur_import(
     print(f"Loaded {len(hints)} hints from Auteur project")
     
     # 2. Match hints to clips
-    placements = match_hints_to_clips(hints, clips, similarity_threshold)
+    placements = match_hints_to_clips(hints, clips)
     print(f"Matched {len(placements)} placements")
     
     # 3. Deduplicate (same scene-shot may appear multiple times)
@@ -324,8 +366,57 @@ def process_auteur_import(
     placements = [p for p in placements if p.image_path]
     print(f"Found {found_count} images, {len(placements)} placements with images")
     
-    # 6. Adjust end times (reverse order processing)
+    # 6. Adjust end times and apply lead time
     if placements:
         placements = adjust_end_times(placements, timeline_end)
+    
+    # 7. Snap to clip boundaries (AFTER lead time is applied)
+    if placements and clips:
+        placements = snap_to_clip_boundaries(placements, clips)
+    
+    return placements
+
+
+def snap_to_clip_boundaries(
+    placements: list[ImagePlacement],
+    clips: list,
+    threshold: float = 0.5  # seconds
+) -> list[ImagePlacement]:
+    """Snap placement start/end times to nearby clip boundaries
+    
+    Args:
+        placements: List of ImagePlacement
+        clips: List of TimelineClip
+        threshold: Maximum distance to snap (seconds)
+        
+    Returns:
+        List of ImagePlacement with snapped times
+    """
+    # Collect all clip boundaries
+    boundaries = set()
+    for clip in clips:
+        if clip.clip_type in ('audio', 'subtitle'):
+            boundaries.add(clip.start)
+            boundaries.add(clip.start + clip.duration)
+    
+    boundaries = sorted(boundaries)
+    
+    def find_nearest(time: float) -> float:
+        """Find nearest boundary within threshold"""
+        best_dist = threshold
+        best_boundary = time
+        
+        for b in boundaries:
+            dist = abs(b - time)
+            if dist < best_dist:
+                best_dist = dist
+                best_boundary = b
+        
+        return best_boundary
+    
+    # Snap each placement
+    for p in placements:
+        p.start_time = find_nearest(p.start_time)
+        p.end_time = find_nearest(p.end_time)
     
     return placements

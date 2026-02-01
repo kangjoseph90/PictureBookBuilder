@@ -3541,8 +3541,7 @@ class MainWindow(QMainWindow):
                 auteur_file=auteur_file,
                 image_folder=self.image_folder,
                 clips=all_clips,
-                timeline_end=timeline_end,
-                similarity_threshold=70.0
+                timeline_end=timeline_end
             )
             
             if not placements:
