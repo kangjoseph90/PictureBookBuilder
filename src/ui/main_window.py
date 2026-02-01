@@ -764,6 +764,7 @@ class MainWindow(QMainWindow):
             # If processing is already done, enable apply button
             if self.timeline_widget.canvas.clips:
                 self.action_apply_images.setEnabled(True)
+                self.action_auteur_import.setEnabled(True)
 
             self.mark_modified()
     
@@ -1105,6 +1106,7 @@ class MainWindow(QMainWindow):
                 # Enable image apply button if we have images
                 if self.image_list.count() > 0:
                     self.action_apply_images.setEnabled(True)
+                    self.action_auteur_import.setEnabled(True)
             
             QMessageBox.information(self, "완료", message)
         else:
