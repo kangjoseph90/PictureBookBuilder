@@ -234,6 +234,11 @@ class MainWindow(QMainWindow):
         self.action_apply_images.setEnabled(False)
         tools_menu.addAction(self.action_apply_images)
         
+        self.action_auteur_import = QAction("Auteur에서 이미지 배치...", self)
+        self.action_auteur_import.triggered.connect(self._import_from_auteur)
+        self.action_auteur_import.setEnabled(False)
+        tools_menu.addAction(self.action_auteur_import)
+        
         # --- Export Menu ---
         export_menu = menu_bar.addMenu("내보내기")
         
@@ -3405,6 +3410,7 @@ class MainWindow(QMainWindow):
             # Enable image apply button if we have images
             if self.image_list.count() > 0:
                 self.action_apply_images.setEnabled(True)
+                self.action_auteur_import.setEnabled(True)
             
             # Load speaker audio cache for waveform regeneration
             self._load_speaker_audio_cache()
@@ -3492,6 +3498,120 @@ class MainWindow(QMainWindow):
         
         print(f"Regenerated {regenerated_count} waveforms")
         self.timeline_widget.canvas.update()
+    
+    def _import_from_auteur(self):
+        """Import scene/shot info from Auteur project and auto-place images"""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtGui import QColor
+        from pathlib import Path
+        from core.auteur_importer import process_auteur_import
+        from ui.clip import TimelineClip
+        from ui.timeline_widget import AddRemoveClipsCommand
+        
+        # Check prerequisites
+        if not self.image_folder:
+            QMessageBox.warning(self, "경고", "먼저 이미지 폴더를 불러와주세요.")
+            return
+        
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
+        if not audio_clips:
+            QMessageBox.warning(self, "경고", "타임라인에 오디오 클립이 없습니다.")
+            return
+        
+        # Select Auteur project file
+        auteur_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "Auteur 프로젝트 파일 선택",
+            "",
+            "JSON 파일 (*.json)"
+        )
+        
+        if not auteur_file:
+            return
+        
+        # Calculate timeline end
+        all_clips = self.timeline_widget.canvas.clips
+        timeline_end = max((c.start + c.duration for c in all_clips), default=0.0)
+        
+        try:
+            # Process import
+            placements = process_auteur_import(
+                auteur_file=auteur_file,
+                image_folder=self.image_folder,
+                clips=all_clips,
+                timeline_end=timeline_end,
+                similarity_threshold=70.0
+            )
+            
+            if not placements:
+                QMessageBox.information(
+                    self, "결과", 
+                    "매칭된 이미지가 없습니다.\n"
+                    "- Auteur 프로젝트와 타임라인의 대사가 일치하는지 확인하세요.\n"
+                    "- 이미지 파일명이 n-m 형식(예: 1-1.png)인지 확인하세요."
+                )
+                return
+            
+            # Check existing image clips
+            existing_image_clips = [c for c in all_clips if c.clip_type == "image"]
+            if existing_image_clips:
+                reply = QMessageBox.warning(
+                    self, "경고",
+                    f"기존 이미지 클립 {len(existing_image_clips)}개가 모두 삭제됩니다.\n계속하시겠습니까?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            
+            # Create new image clips
+            new_image_clips = []
+            for i, p in enumerate(placements):
+                img_clip = TimelineClip(
+                    id=self._make_unique_clip_id(f"auteur_img_{p.scene_id}_{p.shot_id}"),
+                    name=Path(p.image_path).name,
+                    start=p.start_time,
+                    duration=p.end_time - p.start_time,
+                    track=2,  # Image track
+                    color=QColor("#9E9E9E"),
+                    clip_type="image",
+                    waveform=[],
+                    image_path=p.image_path
+                )
+                new_image_clips.append(img_clip)
+            
+            # Create undo command
+            cmd = AddRemoveClipsCommand(
+                self.timeline_widget.canvas,
+                added=new_image_clips,
+                removed=existing_image_clips,
+                description="Import images from Auteur",
+                callback=self._on_undo_redo_callback
+            )
+            self.undo_stack.push(cmd)
+            cmd.redo()
+            self._update_undo_redo_actions()
+            
+            # Update timeline
+            self.timeline_widget.canvas._update_total_duration()
+            self.timeline_widget.canvas._background_dirty = True
+            self.timeline_widget.canvas.update()
+            
+            # Sync to preview
+            self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips)
+            
+            # Show result
+            self.statusBar().showMessage(
+                f"Auteur에서 이미지 {len(new_image_clips)}개가 배치되었습니다."
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self, "오류", 
+                f"Auteur 프로젝트 가져오기 실패:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
 
 
 def main():
