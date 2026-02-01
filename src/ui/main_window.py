@@ -3508,7 +3508,7 @@ class MainWindow(QMainWindow):
         from pathlib import Path
         from core.auteur_importer import process_auteur_import
         from ui.clip import TimelineClip
-        from ui.timeline_widget import AddRemoveClipsCommand
+        from ui.undo_system import AddRemoveClipsCommand
         
         # Check prerequisites
         if not self.image_folder:
