@@ -199,6 +199,7 @@ def match_hints_to_clips(
     
     # Step 2: Find exact matches for each valid hint
     all_matches = []  # [(hint_idx, hint, start_word_idx, end_word_idx), ...]
+    matched_hints = set()
     
     for hint_idx, hint in enumerate(hints):
         # Skip invalid hints
@@ -209,6 +210,7 @@ def match_hints_to_clips(
         
         target = hint.text
         target_len = len(target)
+        found = False
         
         # Search for exact match
         for start_idx in range(len(all_words)):
@@ -224,29 +226,48 @@ def match_hints_to_clips(
                         'start_idx': start_idx,
                         'end_idx': end_idx
                     })
+                    matched_hints.add(hint_idx)
+                    found = True
                     break
                 
                 if len(concat) > target_len:
                     break
+            
+            if found:
+                break
+        
+        # Debug: Show unmatched hints
+        if not found:
+            print(f"[No Match] Shot {hint.scene_id}-{hint.shot_id}: \"{hint.original_text[:50]}...\"" 
+                  if len(hint.original_text) > 50 else f"[No Match] Shot {hint.scene_id}-{hint.shot_id}: \"{hint.original_text}\"")
     
     if not all_matches:
+        print("No exact matches found!")
         return []
     
     # Step 3: DP for optimal non-overlapping selection
-    all_matches.sort(key=lambda m: m['end_idx'])
+    # Sort by end_idx for DP, but also by hint_idx for stability
+    all_matches.sort(key=lambda m: (m['end_idx'], m['hint_idx']))
     n = len(all_matches)
     
     dp_count = [1] * n  # Number of matches in optimal path ending at i
     dp_prev = [-1] * n
     
     for i in range(n):
-        for j in range(i - 1, -1, -1):
+        # Find the BEST previous compatible match (not just any)
+        best_prev = -1
+        best_prev_count = 0
+        
+        for j in range(i):
             if (all_matches[j]['end_idx'] < all_matches[i]['start_idx'] and 
                 all_matches[j]['hint_idx'] < all_matches[i]['hint_idx']):
-                if dp_count[j] + 1 > dp_count[i]:
-                    dp_count[i] = dp_count[j] + 1
-                    dp_prev[i] = j
-                break
+                if dp_count[j] > best_prev_count:
+                    best_prev_count = dp_count[j]
+                    best_prev = j
+        
+        if best_prev >= 0:
+            dp_count[i] = best_prev_count + 1
+            dp_prev[i] = best_prev
     
     # Backtrack
     best_end = max(range(n), key=lambda i: dp_count[i])
