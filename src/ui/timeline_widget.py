@@ -618,7 +618,9 @@ class TimelineCanvas(QWidget):
         if not is_missing and clip.clip_type == "audio":
             if clip.waveform and len(clip.waveform) > 0:
                 self._draw_waveform(painter, clip, x, y, width, height)
-            self._draw_volume_line(painter, clip, x, y, width, height)
+            # Only draw volume line if clip is selected
+            if clip.id == self.selected_clip:
+                self._draw_volume_line(painter, clip, x, y, width, height)
         
         # Draw thumbnail for image clips (if not missing)
         if not is_missing and clip.clip_type == "image" and clip.image_path:
@@ -894,7 +896,8 @@ class TimelineCanvas(QWidget):
         # Check for volume line interaction
         if event.button() == Qt.MouseButton.LeftButton:
             vol_clip = self.get_clip_at(x, y)
-            if vol_clip and vol_clip.clip_type == "audio":
+            # Only allow interaction if clip is selected AND it is audio
+            if vol_clip and vol_clip.clip_type == "audio" and vol_clip.id == self.selected_clip:
                 vol = getattr(vol_clip, 'volume', 1.0)
                 clip_y = self.get_track_y(vol_clip.track)
                 # Map 0.0 -> bottom, 1.0 -> 50%, 2.0 -> top
@@ -1235,7 +1238,7 @@ class TimelineCanvas(QWidget):
 
         # Check volume line hover
         vol_clip = self.get_clip_at(x, y)
-        if vol_clip and vol_clip.clip_type == "audio":
+        if vol_clip and vol_clip.clip_type == "audio" and vol_clip.id == self.selected_clip:
              vol = getattr(vol_clip, 'volume', 1.0)
              clip_y = self.get_track_y(vol_clip.track)
              line_y = clip_y + self.track_height * (1.0 - vol / 2.0)

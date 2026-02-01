@@ -244,7 +244,9 @@ class AudioMixer(QObject):
             if clip.clip_id in self._active_players:
                 # Find the player associated with this clip (via speaker cache usually, but active_players has ref)
                 player, audio_output = self._active_players[clip.clip_id]
-                effective_vol = min(1.0, self._volume * clip.volume)
+                # Allow volume to exceed 1.0 if QAudioOutput supports it (though usually clamped by backend)
+                # We simply remove our artificial clamp here.
+                effective_vol = self._volume * clip.volume
                 audio_output.setVolume(effective_vol)
 
     def _update_position(self):
@@ -365,8 +367,8 @@ class AudioMixer(QObject):
             
         player, audio_output, seek_correction = cached
         
-        # Apply volume (clamped to 1.0)
-        effective_vol = min(1.0, self._volume * clip.volume)
+        # Apply volume
+        effective_vol = self._volume * clip.volume
         audio_output.setVolume(effective_vol)
 
         # Calculate where in the source audio to start
@@ -455,11 +457,23 @@ class AudioMixer(QObject):
             # Clip not found, add it
             self.clips.append(clip)
             
-        # If this clip is currently playing and was modified, restart it
-        if clip.clip_id in self._active_players and self._playing:
-            self._stop_clip(clip.clip_id)
-            if clip.timeline_start <= self._position < clip.timeline_end:
-                self._start_clip(clip, self._position)
+        # If this clip is active (playing or paused), update it
+        if clip.clip_id in self._active_players:
+            # 1. Update volume immediately
+            _, audio_output = self._active_players[clip.clip_id]
+            effective_vol = self._volume * clip.volume
+            audio_output.setVolume(effective_vol)
+
+            # 2. If playing and timing changed significantly, restart might be needed
+            # For volume-only changes, we don't need to restart.
+            # But verifying 'only volume changed' is complex.
+            # If playing, we restart to ensure sync (safe).
+            # If paused, we DON'T restart, just update volume (done above),
+            # so next play() resumes correctly.
+            if self._playing:
+                self._stop_clip(clip.clip_id)
+                if clip.timeline_start <= self._position < clip.timeline_end:
+                    self._start_clip(clip, self._position)
                 
         self._update_duration()
         
