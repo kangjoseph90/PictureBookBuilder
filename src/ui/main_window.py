@@ -1639,7 +1639,8 @@ class MainWindow(QMainWindow):
         
         def do_split():
             cursor_pos = text_edit.textCursor().position()
-            self._split_subtitle_at(clip, cursor_pos)
+            new_text = text_edit.toPlainText()
+            self._split_subtitle_at(clip, cursor_pos, new_text)
             dialog.accept()
         
         split_btn.clicked.connect(do_split)
@@ -1647,11 +1648,13 @@ class MainWindow(QMainWindow):
         
         dialog.exec()
     
-    def _split_subtitle_at(self, clip, char_pos: int):
+    def _split_subtitle_at(self, clip, char_pos: int, new_text: str = None):
         """Split subtitle clip at character position (NEW API)"""
         from core.subtitle_processor import SubtitleProcessor
         
-        if char_pos <= 0 or char_pos >= len(clip.name):
+        target_text = new_text if new_text is not None else clip.name
+
+        if char_pos <= 0 or char_pos >= len(target_text):
             self.statusBar().showMessage("나눌 위치가 올바르지 않습니다.")
             return
         
@@ -1669,7 +1672,7 @@ class MainWindow(QMainWindow):
         
         # NEW API: 통합 Fuzzy Matching으로 타임스탬프 계산
         split_indices = [char_pos]
-        timestamps = processor.calculate_split_times(clip.name, split_indices, clip.words)
+        timestamps = processor.calculate_split_times(target_text, split_indices, clip.words)
         
         if not timestamps:
             self.statusBar().showMessage("분할 타임스탬프 계산에 실패했습니다.")
@@ -1691,12 +1694,12 @@ class MainWindow(QMainWindow):
         actual_split_pos = char_pos
         
         # Skip trailing spaces
-        while actual_split_pos < len(clip.name) and clip.name[actual_split_pos] == ' ':
+        while actual_split_pos < len(target_text) and target_text[actual_split_pos] == ' ':
             actual_split_pos += 1
         
         # Create two text segments
-        text1 = clip.name[:actual_split_pos].strip()
-        text2 = clip.name[actual_split_pos:].strip()
+        text1 = target_text[:actual_split_pos].strip()
+        text2 = target_text[actual_split_pos:].strip()
         
         # Split words based on fuzzy-matched timestamp
         words1 = []
