@@ -1557,6 +1557,7 @@ class MainWindow(QMainWindow):
         if clip.clip_type == "subtitle":
             edit_action = menu.addAction("텍스트 수정")
             split_action = menu.addAction("자막 나누기...")
+            break_action = menu.addAction("자막 줄바꿈...")
             menu.addSeparator()
             
             # Find if there's a next subtitle clip
@@ -1571,6 +1572,8 @@ class MainWindow(QMainWindow):
                 self._on_clip_double_clicked(clip_id)
             elif action == split_action:
                 self._show_subtitle_editor(clip)
+            elif action == break_action:
+                self._show_subtitle_line_break_editor(clip)
             elif merge_action and action == merge_action:
                 self._merge_subtitle_clips(clip, next_clip)
         
@@ -1770,6 +1773,83 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage("자막이 나눠졌습니다.")
+
+    def _show_subtitle_line_break_editor(self, clip):
+        """Show dialog for inserting a line break in subtitle at a specific point"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton, QHBoxLayout
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("자막 줄바꿈")
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("줄바꿈할 위치의 앞 텍스트를 남기세요:"))
+
+        text_edit = QTextEdit()
+        text_edit.setPlainText(clip.name)
+        layout.addWidget(text_edit)
+
+        layout.addWidget(QLabel("커서 위치에서 줄바꿈이 삽입됩니다."))
+
+        btn_layout = QHBoxLayout()
+        break_btn = QPushButton("줄바꿈")
+        cancel_btn = QPushButton("취소")
+        btn_layout.addWidget(break_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        def do_break():
+            cursor_pos = text_edit.textCursor().position()
+            new_text = text_edit.toPlainText()
+            self._break_subtitle_line_at(clip, cursor_pos, new_text)
+            dialog.accept()
+
+        break_btn.clicked.connect(do_break)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        dialog.exec()
+
+    def _break_subtitle_line_at(self, clip, char_pos: int, new_text: str = None):
+        """Insert line break in subtitle clip at character position"""
+        target_text = new_text if new_text is not None else clip.name
+
+        if char_pos < 0 or char_pos > len(target_text):
+            self.statusBar().showMessage("줄바꿈 위치가 올바르지 않습니다.")
+            return
+
+        # Skip leading/trailing spaces around the split point if any, logic from tests
+        actual_split_pos = char_pos
+        while actual_split_pos < len(target_text) and target_text[actual_split_pos] == ' ':
+            actual_split_pos += 1
+
+        part1 = target_text[:actual_split_pos].strip()
+        part2 = target_text[actual_split_pos:].strip()
+
+        final_text = f"{part1}\n{part2}"
+        if not part1:
+            final_text = part2
+        if not part2:
+            final_text = part1
+
+        old_state = copy.deepcopy(clip)
+        clip.name = final_text
+        new_state = copy.deepcopy(clip)
+
+        # Undo Command
+        cmd = ModifyClipsCommand(
+            self.timeline_widget.canvas,
+            [(clip.id, old_state, new_state)],
+            description="Insert line break in subtitle",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        self._update_undo_redo_actions()
+
+        self.timeline_widget.canvas._background_dirty = True
+        self.timeline_widget.canvas.update()
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage("자막 줄바꿈이 적용되었습니다.")
 
     def _find_linked_audio_clip_for_subtitle(self, subtitle_clip):
         """Find the most likely linked audio clip for a subtitle clip.
