@@ -1055,7 +1055,7 @@ class TimelineCanvas(QWidget):
             
             for clip in self.clips:
                 if clip.id == self.resizing_clip:
-                    if clip.clip_type in ("audio", "subtitle"):
+                    if clip.clip_type == "audio":
                         # Audio and subtitle clips: adjust offset and duration together
                         if self.resize_edge == "left":
                             # Left edge: change offset and start, adjust duration
