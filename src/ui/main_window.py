@@ -890,14 +890,19 @@ class MainWindow(QMainWindow):
 
         # Select appropriate thumbnail based on size
         pixmap = None
-        if current_size > 50:
-             # Use larger preview thumbnail for zoomed in view
-             pixmap = cache.get_thumbnail_preview(path)
-             # Fallback to timeline if preview not available
-             if not pixmap:
-                 pixmap = cache.get_thumbnail_timeline(path)
 
-        # Fallback to small or if size is small
+        # 1. Use large preview thumbnail only for larger sizes (>100px)
+        if current_size > 100:
+             pixmap = cache.get_thumbnail_preview(path)
+
+        # 2. Use timeline thumbnail (120x60) for medium sizes (>50px)
+        if not pixmap and current_size > 50:
+             pixmap = cache.get_thumbnail_timeline(path)
+             # Fallback to preview if timeline is missing but we wanted something > 50
+             if not pixmap:
+                 pixmap = cache.get_thumbnail_preview(path)
+
+        # 3. Fallback to small thumbnail
         if not pixmap:
             pixmap = cache.get_thumbnail_small(path)
 
