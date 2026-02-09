@@ -1203,10 +1203,26 @@ class MainWindow(QMainWindow):
         # Add image clips to track 1 (synced with audio clips)
         if self.image_folder:
             from pathlib import Path as P
+            import re
+
+            def natural_key(text):
+                return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+
             image_folder = P(self.image_folder)
             images = []
-            for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-                images.extend(sorted(image_folder.glob(ext)))
+
+            # Scan for images case-insensitively using iterdir
+            valid_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
+            try:
+                if image_folder.exists() and image_folder.is_dir():
+                    for p in image_folder.iterdir():
+                        if p.is_file() and p.suffix.lower() in valid_extensions:
+                            images.append(p)
+            except OSError:
+                pass
+
+            # Sort images naturally to match side panel
+            images.sort(key=lambda x: natural_key(x.name))
             
             if images:
                 # Get audio clip start times for image sync

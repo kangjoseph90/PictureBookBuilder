@@ -135,13 +135,21 @@ def find_image_file(folder: str, scene_id: int, shot_id: int) -> Optional[str]:
         f"{scene_id}-{shot_id:02d}",       # 1-01
     ]
     
-    extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
-    
+    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}
+
+    # Pre-scan directory case-insensitively
+    available_files = {}
+    try:
+        for p in folder_path.iterdir():
+            if p.is_file() and p.suffix.lower() in extensions:
+                available_files[p.stem.lower()] = p
+    except OSError:
+        pass
+
     for pattern in patterns:
-        for ext in extensions:
-            file_path = folder_path / f"{pattern}{ext}"
-            if file_path.exists():
-                return str(file_path)
+        # Check against available files (case-insensitive stem match)
+        if pattern.lower() in available_files:
+            return str(available_files[pattern.lower()])
     
     return None
 
