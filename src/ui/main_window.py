@@ -812,8 +812,16 @@ class MainWindow(QMainWindow):
         self.image_list.clear()
         image_path = Path(folder_path)
         images = []
-        for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
-            images.extend(image_path.glob(ext))
+
+        # Scan for images case-insensitively using iterdir
+        valid_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
+        try:
+            if image_path.exists() and image_path.is_dir():
+                for p in image_path.iterdir():
+                    if p.is_file() and p.suffix.lower() in valid_extensions:
+                        images.append(p)
+        except OSError:
+            pass
         
         # Sort images naturally (1, 2, 10 instead of 1, 10, 2)
         images.sort(key=lambda x: natural_key(x.name))
