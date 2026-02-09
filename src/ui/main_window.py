@@ -812,16 +812,8 @@ class MainWindow(QMainWindow):
         self.image_list.clear()
         image_path = Path(folder_path)
         images = []
-
-        # Scan for images case-insensitively using iterdir
-        valid_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
-        try:
-            if image_path.exists() and image_path.is_dir():
-                for p in image_path.iterdir():
-                    if p.is_file() and p.suffix.lower() in valid_extensions:
-                        images.append(p)
-        except OSError:
-            pass
+        for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+            images.extend(image_path.glob(ext))
         
         # Sort images naturally (1, 2, 10 instead of 1, 10, 2)
         images.sort(key=lambda x: natural_key(x.name))
@@ -1203,26 +1195,10 @@ class MainWindow(QMainWindow):
         # Add image clips to track 1 (synced with audio clips)
         if self.image_folder:
             from pathlib import Path as P
-            import re
-
-            def natural_key(text):
-                return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
-
             image_folder = P(self.image_folder)
             images = []
-
-            # Scan for images case-insensitively using iterdir
-            valid_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
-            try:
-                if image_folder.exists() and image_folder.is_dir():
-                    for p in image_folder.iterdir():
-                        if p.is_file() and p.suffix.lower() in valid_extensions:
-                            images.append(p)
-            except OSError:
-                pass
-
-            # Sort images naturally to match side panel
-            images.sort(key=lambda x: natural_key(x.name))
+            for ext in ['*.png', '*.jpg', '*.jpeg', '*.webp']:
+                images.extend(sorted(image_folder.glob(ext)))
             
             if images:
                 # Get audio clip start times for image sync
@@ -3501,6 +3477,11 @@ class MainWindow(QMainWindow):
         self.image_list.clear()
         print(f"Loading image folder: {self.image_folder}")
         if self.image_folder and Path(self.image_folder).exists():
+            # Setup file watcher for the loaded project folder
+            if self.image_watcher.directories():
+                self.image_watcher.removePaths(self.image_watcher.directories())
+            self.image_watcher.addPath(self.image_folder)
+
             self._populate_image_list(self.image_folder)
             self.reload_images_action.setEnabled(True)
             print(f"  Loaded images with thumbnails")
