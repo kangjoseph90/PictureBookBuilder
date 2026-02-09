@@ -3477,6 +3477,11 @@ class MainWindow(QMainWindow):
         self.image_list.clear()
         print(f"Loading image folder: {self.image_folder}")
         if self.image_folder and Path(self.image_folder).exists():
+            # Setup file watcher for the loaded project folder
+            if self.image_watcher.directories():
+                self.image_watcher.removePaths(self.image_watcher.directories())
+            self.image_watcher.addPath(self.image_folder)
+
             self._populate_image_list(self.image_folder)
             self.reload_images_action.setEnabled(True)
             print(f"  Loaded images with thumbnails")

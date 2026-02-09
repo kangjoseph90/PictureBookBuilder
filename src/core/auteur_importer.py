@@ -136,7 +136,7 @@ def find_image_file(folder: str, scene_id: int, shot_id: int) -> Optional[str]:
     ]
     
     extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
-    
+
     for pattern in patterns:
         for ext in extensions:
             file_path = folder_path / f"{pattern}{ext}"
