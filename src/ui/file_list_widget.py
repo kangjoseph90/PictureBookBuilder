@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import (
-    QApplication, QListWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem
+    QApplication, QListWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QMimeData, QUrl
-from PyQt6.QtGui import QPalette, QFontMetrics
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect, QMimeData, QUrl, QPoint
+from PyQt6.QtGui import QPalette, QFontMetrics, QWheelEvent
 
 class ImageGridDelegate(QStyledItemDelegate):
     """Custom delegate to render icons with text below in ListMode"""
@@ -68,9 +68,11 @@ class DraggableImageListWidget(QListWidget):
         self.min_zoom = 32
         self.max_zoom = 256
         self.zoom_step = 16
+        # Enable pixel scrolling for smoother experience
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
     def wheelEvent(self, event):
-        """Handle zoom with Ctrl+Wheel"""
+        """Handle zoom with Ctrl+Wheel, reduce scroll speed otherwise"""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
             if delta > 0:
@@ -79,7 +81,26 @@ class DraggableImageListWidget(QListWidget):
                 self.zoom_out()
             event.accept()
         else:
-            super().wheelEvent(event)
+            # Reduce scroll speed by half
+            angle = event.angleDelta()
+            pixel = event.pixelDelta()
+
+            # Use integer division to ensure QPoint(int, int)
+            new_angle = QPoint(angle.x() // 2, angle.y() // 2)
+            new_pixel = QPoint(pixel.x() // 2, pixel.y() // 2)
+
+            new_event = QWheelEvent(
+                event.position(),
+                event.globalPosition(),
+                new_pixel,
+                new_angle,
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+                event.source()
+            )
+            super().wheelEvent(new_event)
 
     def zoom_in(self):
         self._adjust_zoom(1)
