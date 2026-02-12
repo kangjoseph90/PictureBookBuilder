@@ -7,6 +7,10 @@ from pathlib import Path
 # Add src to path for running as script
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Import torch BEFORE PyQt6 to avoid DLL conflict on Windows.
+# PyQt6's Qt DLLs interfere with PyTorch's c10.dll if loaded first.
+import torch  # noqa: F401
+
 from PyQt6.QtWidgets import QApplication, QDialog
 from ui.main_window import MainWindow, main as original_main
 from ui.start_screen import StartScreen
