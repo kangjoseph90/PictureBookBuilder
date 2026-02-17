@@ -66,9 +66,17 @@ class Project:
         }
 
     @classmethod
+    def _parse_version(cls, version_str: str) -> tuple[int, ...]:
+        """Parse a dotted version string into a comparable tuple of ints."""
+        try:
+            return tuple(int(p) for p in version_str.split("."))
+        except (ValueError, AttributeError):
+            return (0,)
+
+    @classmethod
     def from_dict(cls, data: dict) -> "Project":
         version = data.get("version", "1.1")
-        if version < "2.0":
+        if cls._parse_version(version) < (2, 0):
             return cls._from_legacy_dict(data)
         return cls(
             uuid=data.get("uuid", str(uuid.uuid4())),
