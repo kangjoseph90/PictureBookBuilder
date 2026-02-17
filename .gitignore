@@ -40,6 +40,9 @@ ENV/
 # Project Outputs
 outputs/
 
+# Testing
+.pytest_cache/
+
 # User-specific
 .env
 .gemini/
