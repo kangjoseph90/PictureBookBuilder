@@ -117,6 +117,14 @@ class RuntimeConfig:
         # Filter only known fields to avoid errors with old/new config versions
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        # Backward compatibility:
+        # Old project files may have manual subtitle values but no auto_params flag.
+        # In that case, default to manual mode so users can adjust line settings.
+        if (
+            'subtitle_auto_params' not in filtered_data and
+            any(k in filtered_data for k in ('subtitle_line_soft_cap', 'subtitle_line_hard_cap', 'subtitle_max_lines'))
+        ):
+            filtered_data['subtitle_auto_params'] = False
         return cls(**filtered_data)
     
     def reset_to_defaults(self):
