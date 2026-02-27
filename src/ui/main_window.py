@@ -314,7 +314,6 @@ class MainWindow(QMainWindow):
         # Add actions
         toolbar.addAction(self.action_process)
         toolbar.addSeparator()
-        toolbar.addAction(self.action_serialize_subs)
         toolbar.addAction(self.action_format_subs)
         toolbar.addAction(self.action_apply_images)
         
