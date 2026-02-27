@@ -1494,7 +1494,7 @@ class TimelineCanvas(QWidget):
             anchor_time = self.x_to_time(event.position().x())
             
             old_zoom = self.zoom
-            self.zoom = max(20, min(500, self.zoom * (1.1 ** delta)))
+            self.zoom = max(10, min(500, self.zoom * (1.1 ** delta)))
             
             # Adjust scroll to keep mouse position stable:
             # new_scroll = old_scroll + anchor_time * (new_zoom - old_zoom)
