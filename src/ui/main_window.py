@@ -2180,26 +2180,26 @@ class MainWindow(QMainWindow):
 
         serialized_clips = []
         merged_count = 0
-        normalized_count = 0
+        normalized_input_count = 0
 
         track_map = {}
         for clip in subtitle_clips:
             track_map.setdefault(clip.track, []).append(clip)
 
         for track_subs in track_map.values():
-            track_subs = sorted(track_subs, key=lambda c: c.start)
-            for clip in track_subs:
+            sorted_track_subs = sorted(track_subs, key=lambda c: c.start)
+            for clip in sorted_track_subs:
                 normalized_text = processor.serialize_subtitle_text(clip.name)
                 if normalized_text != clip.name:
                     clip.name = normalized_text
-                    normalized_count += 1
+                    normalized_input_count += 1
 
             i = 0
-            while i < len(track_subs):
-                current = track_subs[i]
+            while i < len(sorted_track_subs):
+                current = sorted_track_subs[i]
                 j = i + 1
-                while j < len(track_subs):
-                    next_clip = track_subs[j]
+                while j < len(sorted_track_subs):
+                    next_clip = sorted_track_subs[j]
                     can_merge, _ = self._can_merge_subtitle_clips(current, next_clip)
                     if not can_merge:
                         break
@@ -2239,7 +2239,7 @@ class MainWindow(QMainWindow):
 
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
-        self.statusBar().showMessage(f"자막 직렬화 완료: {merged_count}개 병합, {normalized_count}개 공백 정리")
+        self.statusBar().showMessage(f"자막 직렬화 완료: {merged_count}개 병합, {normalized_input_count}개 입력 클립 공백 정리")
     
     def _auto_format_subtitles(self):
         """Apply automatic formatting to all subtitle clips (NEW API)"""
