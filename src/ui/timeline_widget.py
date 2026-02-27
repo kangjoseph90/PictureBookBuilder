@@ -1519,8 +1519,6 @@ class TimelineCanvas(QWidget):
             self.paste_requested.emit()
         elif event.key() == Qt.Key.Key_Delete:
             # Delete selected clip
-            if not self.selected_clip and self.selected_clips:
-                self.selected_clip = self.selected_clips[0]
             if self.selected_clip:
                 self.clip_delete_requested.emit(self.selected_clip)
         elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_E:

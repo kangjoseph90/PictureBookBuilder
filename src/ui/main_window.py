@@ -1603,7 +1603,11 @@ class MainWindow(QMainWindow):
             elif action == split_action:
                 self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
             elif action == delete_action:
-                self._delete_clip(clip)
+                selected = self._get_selected_clips()
+                if len(selected) > 1 and clip in selected:
+                    self._delete_clips(selected)
+                else:
+                    self._delete_clip(clip)
         
         elif clip.clip_type == "audio":
             insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
@@ -1618,7 +1622,11 @@ class MainWindow(QMainWindow):
             elif action == split_action:
                 self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
             elif action == delete_action:
-                self._delete_clip(clip)
+                selected = self._get_selected_clips()
+                if len(selected) > 1 and clip in selected:
+                    self._delete_clips(selected)
+                else:
+                    self._delete_clip(clip)
 
     def _get_selected_clips(self) -> list[TimelineClip]:
         """Return selected clips from canvas."""
@@ -1696,6 +1704,7 @@ class MainWindow(QMainWindow):
         if clip.clip_type in ("audio", "subtitle"):
             split_offset = clip.offset + first_duration
         else:
+            # Image clips are static, so source offset is unchanged.
             split_offset = clip.offset
 
         waveform1 = []
@@ -1716,7 +1725,7 @@ class MainWindow(QMainWindow):
                     words2.append(w)
             clip.words = words1
         else:
-            words2 = copy.deepcopy(clip.words)
+            words2 = []
 
         new_state = copy.deepcopy(clip)
         new_clip = TimelineClip(
@@ -1747,12 +1756,11 @@ class MainWindow(QMainWindow):
             removed=[],
             description=f"Split {clip.name} (add)",
         )
-        self.timeline_widget.canvas.clips.append(new_clip)
         macro_cmd = MacroCommand([modify_cmd, add_cmd], description=f"Split {clip.name}", callback=self._on_undo_redo_callback)
         self.undo_stack.push(macro_cmd)
+        macro_cmd.redo()
         self._update_undo_redo_actions()
         self.timeline_widget.canvas.set_selected_clip_ids([clip.id, new_clip.id])
-        self._on_undo_redo_callback()
     
     def _find_adjacent_subtitle(self, clip, direction=1):
         """Find adjacent subtitle clip (direction: 1=next, -1=prev)"""
