@@ -412,7 +412,7 @@ class SubtitleProcessor:
         """Merge two adjacent segments"""
         text1 = self.serialize_subtitle_text(seg1.get('text', ''))
         text2 = self.serialize_subtitle_text(seg2.get('text', ''))
-        merged_text = " ".join(part for part in (text1, text2) if part).strip()
+        merged_text = " ".join(part for part in (text1, text2) if part)
         return {
             'text': merged_text,
             'start_time': seg1['start_time'],
