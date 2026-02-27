@@ -1571,6 +1571,9 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         
         if clip.clip_type == "subtitle":
+            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
+            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
+            menu.addSeparator()
             edit_action = menu.addAction("텍스트 수정")
             split_action = menu.addAction("자막 나누기...")
             break_action = menu.addAction("자막 줄바꿈...")
@@ -1584,7 +1587,11 @@ class MainWindow(QMainWindow):
             
             action = menu.exec(pos)
             
-            if action == edit_action:
+            if action == select_follow_track_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
+            elif action == select_follow_all_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
+            elif action == edit_action:
                 self._on_clip_double_clicked(clip_id)
             elif action == split_action:
                 self._show_subtitle_editor(clip)
@@ -1594,6 +1601,9 @@ class MainWindow(QMainWindow):
                 self._merge_subtitle_clips(clip, next_clip)
         
         elif clip.clip_type == "image":
+            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
+            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
+            menu.addSeparator()
             change_image_action = menu.addAction("이미지 변경...")
             realign_action = menu.addAction("여기서 다시 정렬")
             split_action = menu.addAction("현재 재생헤드에서 분할")
@@ -1602,7 +1612,11 @@ class MainWindow(QMainWindow):
             
             action = menu.exec(pos)
             
-            if action == change_image_action:
+            if action == select_follow_track_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
+            elif action == select_follow_all_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
+            elif action == change_image_action:
                 self._change_clip_image(clip)
             elif action == realign_action:
                 self._realign_images_from(clip)
@@ -1616,6 +1630,9 @@ class MainWindow(QMainWindow):
                     self._delete_clip(clip)
         
         elif clip.clip_type == "audio":
+            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
+            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
+            menu.addSeparator()
             insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
             split_action = menu.addAction("현재 재생헤드에서 분할")
             menu.addSeparator()
@@ -1623,7 +1640,11 @@ class MainWindow(QMainWindow):
             
             action = menu.exec(pos)
             
-            if action == insert_image_action:
+            if action == select_follow_track_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
+            elif action == select_follow_all_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
+            elif action == insert_image_action:
                 self._insert_image_at_clip(clip)
             elif action == split_action:
                 self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)

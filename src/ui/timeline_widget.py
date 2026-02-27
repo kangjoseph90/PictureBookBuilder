@@ -79,6 +79,7 @@ class TimelineCanvas(QWidget):
         self.drag_start_x: float = 0
         self.drag_clip_start: float = 0
         self.drag_is_ripple: bool = False
+        self.drag_group_clip_ids: list[str] = []
         self.drag_initial_positions: dict[str, float] = {}
         
         # State tracking for Undo/Redo
@@ -170,6 +171,38 @@ class TimelineCanvas(QWidget):
             self.clip_selected.emit(self.selected_clip)
         self._background_dirty = True
         self.update()
+
+    def _select_following_clips(self, anchor_clip: TimelineClip, same_track_only: bool):
+        """Select clips from anchor position to the right.
+
+        Args:
+            anchor_clip: Clicked clip used as selection anchor.
+            same_track_only: If True, limit to anchor clip track.
+        """
+        if same_track_only:
+            selected = [
+                c.id for c in sorted(self.clips, key=lambda c: c.start)
+                if c.track == anchor_clip.track and c.start >= anchor_clip.start - 0.001
+            ]
+        else:
+            selected = [
+                c.id for c in sorted(self.clips, key=lambda c: (c.start, c.track))
+                if c.start >= anchor_clip.start - 0.001
+            ]
+
+        self.selected_clips = selected
+        self.selected_clip = anchor_clip.id if anchor_clip.id in selected else (selected[0] if selected else None)
+        if self.selected_clip:
+            self.clip_selected.emit(self.selected_clip)
+        self._background_dirty = True
+        self.update()
+
+    def select_following_from_clip_id(self, clip_id: str, same_track_only: bool):
+        """Public helper for selecting following clips from a given clip id."""
+        anchor = next((c for c in self.clips if c.id == clip_id), None)
+        if not anchor:
+            return
+        self._select_following_clips(anchor, same_track_only=same_track_only)
     
     def _schedule_throttled_update(self, waveform_clip_id: Optional[str] = None):
         """Schedule a throttled update to reduce CPU usage during fast dragging.
@@ -1037,7 +1070,16 @@ class TimelineCanvas(QWidget):
             if self.selected_clip in hit_clip_ids:
                 clip = next(c for c in hit_clips if c.id == self.selected_clip)
 
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            modifiers = event.modifiers()
+
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+Click: select following clips in same track
+                # Ctrl+Shift+Click: select following clips in all tracks
+                same_track_only = not bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+                self._select_following_clips(clip, same_track_only=same_track_only)
+                return
+
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
                 if clip.id in self.selected_clips:
                     self.selected_clips = [cid for cid in self.selected_clips if cid != clip.id]
                 else:
@@ -1059,8 +1101,14 @@ class TimelineCanvas(QWidget):
                 self.dragging_clip = clip.id
                 self.drag_start_x = x
                 self.drag_clip_start = clip.start
-                # Store all clip positions for ripple dragging
+                # Store all clip positions for dragging
                 self.drag_initial_positions = {c.id: c.start for c in self.clips}
+
+                selected_ids = [cid for cid in self.selected_clips if cid in self.drag_initial_positions]
+                if len(selected_ids) > 1 and clip.id in selected_ids:
+                    self.drag_group_clip_ids = selected_ids
+                else:
+                    self.drag_group_clip_ids = []
 
                 # Snapshot all clips for Undo
                 self.drag_start_state = {c.id: copy.deepcopy(c) for c in self.clips}
@@ -1266,10 +1314,6 @@ class TimelineCanvas(QWidget):
                     break
             
             if dragged_clip:
-                # Check for ripple modifiers
-                is_ripple_all = event.modifiers() & Qt.KeyboardModifier.ControlModifier  # All tracks
-                is_ripple_track = event.modifiers() & Qt.KeyboardModifier.ShiftModifier  # Same track only
-                
                 new_start = self.drag_clip_start + dt
                 # Apply snapping to the start of the dragged clip
                 snapped_start = self.get_snap_time(new_start, exclude_clip_id=dragged_clip.id)
@@ -1286,21 +1330,22 @@ class TimelineCanvas(QWidget):
                 
                 final_start = max(0, final_start)
                 actual_dt = final_start - self.drag_clip_start
-                
-                if is_ripple_all:
-                    # Ctrl: Move all subsequent clips across ALL tracks
+
+                if self.drag_group_clip_ids:
+                    group_initial_starts = [
+                        self.drag_initial_positions.get(cid, 0.0)
+                        for cid in self.drag_group_clip_ids
+                    ]
+                    min_group_start = min(group_initial_starts) if group_initial_starts else 0.0
+                    if actual_dt < -min_group_start:
+                        actual_dt = -min_group_start
+
                     for clip in self.clips:
-                        initial_start = self.drag_initial_positions.get(clip.id, clip.start)
-                        if initial_start >= self.drag_clip_start - 0.001:
+                        if clip.id in self.drag_group_clip_ids:
+                            initial_start = self.drag_initial_positions.get(clip.id, clip.start)
                             clip.start = max(0, initial_start + actual_dt)
-                elif is_ripple_track:
-                    # Shift: Move all subsequent clips in SAME TRACK only
-                    for clip in self.clips:
-                        if clip.track != dragged_clip.track:
-                            continue
-                        initial_start = self.drag_initial_positions.get(clip.id, clip.start)
-                        if initial_start >= self.drag_clip_start - 0.001:
-                            clip.start = max(0, initial_start + actual_dt)
+
+                    final_start = self.drag_clip_start + actual_dt
                 else:
                     dragged_clip.start = final_start
             
@@ -1436,6 +1481,7 @@ class TimelineCanvas(QWidget):
                     self._background_dirty = True
 
             self.dragging_clip = None
+            self.drag_group_clip_ids = []
             self.active_snap_time = None
             self.drag_start_state.clear()
             self._background_dirty = True
