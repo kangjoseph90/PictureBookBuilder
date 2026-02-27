@@ -75,6 +75,8 @@ class MainWindow(QMainWindow):
         
         # Undo system
         self.undo_stack = UndoStack()
+        self.clipboard_clips: list[TimelineClip] = []
+        self.clipboard_anchor_time: float = 0.0
 
         # State management for non-undoable changes (e.g. script/audio mapping)
         self._manual_modification_flag = False
@@ -464,6 +466,9 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.history_command_generated.connect(self._on_history_command)
         self.timeline_widget.canvas.image_dropped.connect(self._on_image_dropped)
         self.timeline_widget.canvas.clip_delete_requested.connect(self._on_clip_delete_requested)
+        self.timeline_widget.canvas.copy_requested.connect(self._on_copy_requested)
+        self.timeline_widget.canvas.paste_requested.connect(self._on_paste_requested)
+        self.timeline_widget.canvas.split_requested.connect(self._on_split_requested)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -1585,6 +1590,7 @@ class MainWindow(QMainWindow):
         elif clip.clip_type == "image":
             change_image_action = menu.addAction("이미지 변경...")
             realign_action = menu.addAction("여기서 다시 정렬")
+            split_action = menu.addAction("현재 재생헤드에서 분할")
             menu.addSeparator()
             delete_action = menu.addAction("삭제")
             
@@ -1594,17 +1600,159 @@ class MainWindow(QMainWindow):
                 self._change_clip_image(clip)
             elif action == realign_action:
                 self._realign_images_from(clip)
+            elif action == split_action:
+                self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
             elif action == delete_action:
                 self._delete_clip(clip)
         
         elif clip.clip_type == "audio":
             insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
+            split_action = menu.addAction("현재 재생헤드에서 분할")
             menu.addSeparator()
+            delete_action = menu.addAction("삭제")
             
             action = menu.exec(pos)
             
             if action == insert_image_action:
                 self._insert_image_at_clip(clip)
+            elif action == split_action:
+                self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
+            elif action == delete_action:
+                self._delete_clip(clip)
+
+    def _get_selected_clips(self) -> list[TimelineClip]:
+        """Return selected clips from canvas."""
+        selected_ids = []
+        if self.timeline_widget.canvas.selected_clips:
+            selected_ids = list(self.timeline_widget.canvas.selected_clips)
+        elif self.timeline_widget.canvas.selected_clip:
+            selected_ids = [self.timeline_widget.canvas.selected_clip]
+        return [c for c in self.timeline_widget.canvas.clips if c.id in selected_ids]
+
+    def _on_copy_requested(self):
+        """Copy selected clips to internal clipboard."""
+        selected = sorted(self._get_selected_clips(), key=lambda c: c.start)
+        if not selected:
+            self.statusBar().showMessage("복사할 클립이 선택되지 않았습니다.")
+            return
+        self.clipboard_clips = [copy.deepcopy(c) for c in selected]
+        self.clipboard_anchor_time = min(c.start for c in selected)
+        self.statusBar().showMessage(f"{len(selected)}개 클립을 복사했습니다.")
+
+    def _on_paste_requested(self):
+        """Paste copied clips at the current playhead."""
+        if not self.clipboard_clips:
+            self.statusBar().showMessage("붙여넣을 클립이 없습니다.")
+            return
+
+        paste_time = self.timeline_widget.canvas.playhead_time
+        new_clips: list[TimelineClip] = []
+        for source in self.clipboard_clips:
+            new_clip = copy.deepcopy(source)
+            new_clip.id = self._make_unique_clip_id(f"{source.id}_copy")
+            new_clip.start = max(0.0, paste_time + (source.start - self.clipboard_anchor_time))
+            new_clips.append(new_clip)
+
+        cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=new_clips,
+            removed=[],
+            description=f"Paste {len(new_clips)} clip(s)",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+
+        self.timeline_widget.canvas.set_selected_clip_ids([c.id for c in new_clips])
+        self.statusBar().showMessage(f"{len(new_clips)}개 클립을 붙여넣었습니다.")
+
+    def _on_split_requested(self):
+        """Split selected clip at current playhead."""
+        selected = sorted(self._get_selected_clips(), key=lambda c: c.start)
+        if not selected:
+            self.statusBar().showMessage("분할할 클립이 선택되지 않았습니다.")
+            return
+        clip = selected[0]
+        if clip.clip_type == "subtitle":
+            self._show_subtitle_editor(clip)
+            return
+        self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
+
+    def _split_clip_at_time(self, clip, split_time: float):
+        """Split a clip at a timeline position."""
+        clip_start = clip.start
+        clip_end = clip.start + clip.duration
+        if split_time <= clip_start + 0.05 or split_time >= clip_end - 0.05:
+            self.statusBar().showMessage("재생헤드를 클립 내부로 이동한 뒤 분할하세요.")
+            return
+
+        original_duration = clip.duration
+        first_duration = split_time - clip.start
+        second_duration = clip_end - split_time
+        old_state = copy.deepcopy(clip)
+
+        clip.duration = first_duration
+        if clip.clip_type in ("audio", "subtitle"):
+            split_offset = clip.offset + first_duration
+        else:
+            split_offset = clip.offset
+
+        waveform1 = []
+        waveform2 = []
+        if clip.waveform:
+            split_index = int(len(clip.waveform) * (first_duration / original_duration))
+            waveform1 = clip.waveform[:split_index]
+            waveform2 = clip.waveform[split_index:]
+            clip.waveform = waveform1
+
+        if clip.clip_type == "subtitle" and clip.words:
+            words1, words2 = [], []
+            for w in clip.words:
+                w_end = w.end if hasattr(w, "end") else 0.0
+                if w_end <= split_offset:
+                    words1.append(w)
+                else:
+                    words2.append(w)
+            clip.words = words1
+        else:
+            words2 = copy.deepcopy(clip.words)
+
+        new_state = copy.deepcopy(clip)
+        new_clip = TimelineClip(
+            id=self._make_unique_clip_id(f"{clip.id}_split"),
+            name=clip.name,
+            start=split_time,
+            duration=second_duration,
+            track=clip.track,
+            color=clip.color,
+            clip_type=clip.clip_type,
+            waveform=waveform2,
+            image_path=clip.image_path,
+            volume=clip.volume,
+            offset=split_offset,
+            segment_index=clip.segment_index,
+            speaker=clip.speaker,
+            words=words2
+        )
+
+        modify_cmd = ModifyClipsCommand(
+            self.timeline_widget.canvas,
+            [(clip.id, old_state, new_state)],
+            description=f"Split {clip.name} (modify)",
+        )
+        add_cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[new_clip],
+            removed=[],
+            description=f"Split {clip.name} (add)",
+        )
+        self.timeline_widget.canvas.clips.append(new_clip)
+        macro_cmd = MacroCommand([modify_cmd, add_cmd], description=f"Split {clip.name}", callback=self._on_undo_redo_callback)
+        self.undo_stack.push(macro_cmd)
+        self._update_undo_redo_actions()
+        self.timeline_widget.canvas.set_selected_clip_ids([clip.id, new_clip.id])
+        self._on_undo_redo_callback()
     
     def _find_adjacent_subtitle(self, clip, direction=1):
         """Find adjacent subtitle clip (direction: 1=next, -1=prev)"""
@@ -2765,49 +2913,36 @@ class MainWindow(QMainWindow):
     
     def _delete_clip(self, clip):
         """Delete a clip from the timeline"""
-        if clip in self.timeline_widget.canvas.clips:
-            # Undo command
-            cmd = AddRemoveClipsCommand(
-                self.timeline_widget.canvas,
-                added=[],
-                removed=[clip],
-                description=f"Delete {clip.name}",
-                callback=self._on_undo_redo_callback
-            )
-            self.undo_stack.push(cmd)
-            cmd.redo()
-            self._update_undo_redo_actions()
+        self._delete_clips([clip])
 
-            # Remove from AudioMixer if audio clip (handled by _on_undo_redo_callback mostly, but ensure)
-            if clip.clip_type == "audio":
-                self.preview_widget.remove_audio_clip(clip.id)
-            
-            self.timeline_widget.canvas._background_dirty = True
-            self.timeline_widget.canvas.update()
-            playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
-            self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
-            
-            # Update total duration
-            all_clips = self.timeline_widget.canvas.clips
-            if all_clips:
-                total_duration = max((c.start + c.duration for c in all_clips), default=0.0)
-                self.preview_widget.set_total_duration(total_duration)
-            
-            self.statusBar().showMessage(f"클립이 삭제되었습니다: {clip.name}")
+    def _delete_clips(self, clips: list[TimelineClip]):
+        """Delete multiple clips from the timeline."""
+        targets = [c for c in clips if c in self.timeline_widget.canvas.clips]
+        if not targets:
+            return
+        cmd = AddRemoveClipsCommand(
+            self.timeline_widget.canvas,
+            added=[],
+            removed=targets,
+            description=f"Delete {len(targets)} clip(s)",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+        self.timeline_widget.canvas.set_selected_clip_ids([])
+        self.statusBar().showMessage(f"{len(targets)}개 클립이 삭제되었습니다.")
     
     def _on_clip_delete_requested(self, clip_id: str):
         """Handle delete key press on timeline - delete the selected clip"""
-        # Find the clip by ID
-        clip = None
-        for c in self.timeline_widget.canvas.clips:
-            if c.id == clip_id:
-                clip = c
-                break
-        
+        selected = self._get_selected_clips()
+        if selected:
+            self._delete_clips(selected)
+            return
+
+        clip = next((c for c in self.timeline_widget.canvas.clips if c.id == clip_id), None)
         if clip:
             self._delete_clip(clip)
-            # Clear selection after delete
-            self.timeline_widget.canvas.selected_clip = None
     
     def _regenerate_preview_from_clips(self):
         """Rebuild AudioMixer with all current clips"""
@@ -3719,4 +3854,3 @@ def main():
     window.show()
     
     sys.exit(app.exec())
-

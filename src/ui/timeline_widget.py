@@ -33,6 +33,9 @@ class TimelineCanvas(QWidget):
     clip_double_clicked = pyqtSignal(str)  # Emits clip id
     clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
     clip_delete_requested = pyqtSignal(str)  # Emits clip id when delete key pressed
+    copy_requested = pyqtSignal()
+    paste_requested = pyqtSignal()
+    split_requested = pyqtSignal()
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     image_dropped = pyqtSignal(str, float)  # Emits image path and timeline position
     view_changed = pyqtSignal()  # Emits when zoom/scroll/size changes
@@ -71,6 +74,7 @@ class TimelineCanvas(QWidget):
         
         # Interaction state
         self.selected_clip: Optional[str] = None
+        self.selected_clips: list[str] = []
         self.dragging_clip: Optional[str] = None
         self.drag_start_x: float = 0
         self.drag_clip_start: float = 0
@@ -135,14 +139,37 @@ class TimelineCanvas(QWidget):
         self._update_interval_ms = 16  # ~60fps max update rate
         self._pending_update = False
         self._pending_waveform_clip_id: Optional[str] = None
+
+        # Drag-box selection state
+        self.dragging_selection_box: bool = False
+        self.selection_box_start: Optional[tuple[float, float]] = None
+        self.selection_box_end: Optional[tuple[float, float]] = None
+        self.selection_box_additive: bool = False
     
     def set_clips(self, clips: list[TimelineClip]):
         """Set the clips to display"""
         self.clips = clips
+        clip_ids = {c.id for c in self.clips}
+        self.selected_clips = [cid for cid in self.selected_clips if cid in clip_ids]
+        if self.selected_clip and self.selected_clip not in clip_ids:
+            self.selected_clip = self.selected_clips[0] if self.selected_clips else None
+        elif self.selected_clip and self.selected_clip not in self.selected_clips:
+            self.selected_clips.append(self.selected_clip)
         self._update_total_duration()
         self._background_dirty = True
         self.update()
         self.view_changed.emit()
+
+    def set_selected_clip_ids(self, clip_ids: list[str]):
+        """Set selected clips while keeping selected_clip in sync."""
+        valid_ids = {c.id for c in self.clips}
+        unique_ids = [cid for cid in dict.fromkeys(clip_ids) if cid in valid_ids]
+        self.selected_clips = unique_ids
+        self.selected_clip = unique_ids[0] if unique_ids else None
+        if self.selected_clip:
+            self.clip_selected.emit(self.selected_clip)
+        self._background_dirty = True
+        self.update()
     
     def _schedule_throttled_update(self, waveform_clip_id: Optional[str] = None):
         """Schedule a throttled update to reduce CPU usage during fast dragging.
@@ -351,6 +378,20 @@ class TimelineCanvas(QWidget):
                 clip_y <= y <= clip_y + self.track_height):
                 hit_clips.append(clip)
         return hit_clips
+
+    def get_clip_ids_in_rect(self, rect: QRectF) -> list[str]:
+        """Get clip IDs intersecting a selection rectangle."""
+        selected = []
+        for clip in self.clips:
+            clip_rect = QRectF(
+                self.time_to_x(clip.start),
+                self.get_track_y(clip.track),
+                clip.duration * self.zoom,
+                self.track_height
+            )
+            if rect.intersects(clip_rect):
+                selected.append(clip.id)
+        return selected
     
     def get_clip_edge_at(self, x: float, y: float) -> tuple[Optional[TimelineClip], str]:
         """Check if mouse is near a clip edge
@@ -479,6 +520,8 @@ class TimelineCanvas(QWidget):
             if 0 <= snap_x <= self.width():
                 painter.setPen(QPen(QColor(255, 255, 255, 100), 1, Qt.PenStyle.DashLine))
                 painter.drawLine(snap_x, 0, snap_x, self.height())
+
+        self._draw_selection_box(painter)
         
         painter.end()
     
@@ -600,7 +643,7 @@ class TimelineCanvas(QWidget):
 
         # Clip rectangle
         color = clip.color
-        if clip.id == self.selected_clip:
+        if clip.id in self.selected_clips:
             color = color.lighter(130)
         
         # Draw background
@@ -619,7 +662,7 @@ class TimelineCanvas(QWidget):
             if clip.waveform and len(clip.waveform) > 0:
                 self._draw_waveform(painter, clip, x, y, width, height)
             # Only draw volume line if clip is selected
-            if clip.id == self.selected_clip:
+            if clip.id in self.selected_clips:
                 self._draw_volume_line(painter, clip, x, y, width, height)
         
         # Draw thumbnail for image clips (if not missing)
@@ -719,11 +762,12 @@ class TimelineCanvas(QWidget):
 
     def _draw_selection_highlight(self, painter: QPainter):
         """Draw a bold selection outline on top of everything"""
-        if not self.selected_clip:
+        if not self.selected_clips:
             return
-            
+
+        selected_ids = set(self.selected_clips)
         for clip in self.clips:
-            if clip.id == self.selected_clip:
+            if clip.id in selected_ids:
                 x = self.time_to_x(clip.start)
                 y = self.get_track_y(clip.track)
                 width = clip.duration * self.zoom
@@ -735,7 +779,19 @@ class TimelineCanvas(QWidget):
                 painter.setPen(QPen(Qt.GlobalColor.white, 2))
                 painter.drawRoundedRect(QRectF(x, y, width, height), 3, 3)
                 painter.restore()
-                break
+
+    def _draw_selection_box(self, painter: QPainter):
+        """Draw drag selection rectangle."""
+        if not self.dragging_selection_box or not self.selection_box_start or not self.selection_box_end:
+            return
+        x1, y1 = self.selection_box_start
+        x2, y2 = self.selection_box_end
+        rect = QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+        painter.save()
+        painter.setBrush(QBrush(QColor(120, 170, 255, 40)))
+        painter.setPen(QPen(QColor(120, 170, 255, 180), 1, Qt.PenStyle.DashLine))
+        painter.drawRect(rect)
+        painter.restore()
 
     def _draw_thumbnail(self, painter: QPainter, clip: TimelineClip, 
                        x: float, y: float, width: float, height: float):
@@ -924,6 +980,7 @@ class TimelineCanvas(QWidget):
             self.resize_original_duration = edge_clip.duration
             self.resize_original_start = edge_clip.start
             self.selected_clip = edge_clip.id
+            self.selected_clips = [edge_clip.id]
             self.clip_selected.emit(edge_clip.id)
             
             # Snapshot state for undo
@@ -971,16 +1028,32 @@ class TimelineCanvas(QWidget):
         
         if hit_clips:
             self._background_dirty = True
+            hit_clip_ids = [c.id for c in hit_clips]
             
             # Choose correct clip from stack
             # If current selection is in the stack, stick with it (allows dragging it)
             # Selection cycling is now handled in mouseReleaseEvent for better UX
             clip = hit_clips[0]
-            if self.selected_clip in [c.id for c in hit_clips]:
+            if self.selected_clip in hit_clip_ids:
                 clip = next(c for c in hit_clips if c.id == self.selected_clip)
-            else:
+
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if clip.id in self.selected_clips:
+                    self.selected_clips = [cid for cid in self.selected_clips if cid != clip.id]
+                else:
+                    self.selected_clips.append(clip.id)
+                self.selected_clip = self.selected_clips[0] if self.selected_clips else None
+                if self.selected_clip:
+                    self.clip_selected.emit(self.selected_clip)
+                self._background_dirty = True
+                self.update()
+                return
+            elif clip.id not in self.selected_clips:
+                self.selected_clips = [clip.id]
                 self.selected_clip = clip.id
-                self.clip_selected.emit(clip.id)
+
+            if self.selected_clip:
+                self.clip_selected.emit(self.selected_clip)
 
             if event.button() == Qt.MouseButton.LeftButton:
                 self.dragging_clip = clip.id
@@ -996,13 +1069,23 @@ class TimelineCanvas(QWidget):
                 # Show context menu
                 self.clip_context_menu.emit(clip.id, event.globalPosition().toPoint())
         else:
-            self._background_dirty = True # Selection cleared
-            self.selected_clip = None
-            # Click on empty area - move playhead
-            new_time = self.x_to_time(x)
-            self.playhead_time = max(0, new_time)
-            self.playhead_moved.emit(self.playhead_time)
-            self.dragging_playhead = True
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.dragging_selection_box = True
+                self.selection_box_start = (x, y)
+                self.selection_box_end = (x, y)
+                self.selection_box_additive = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                if not self.selection_box_additive:
+                    self.selected_clip = None
+                    self.selected_clips = []
+                    self._background_dirty = True
+            else:
+                self._background_dirty = True
+                self.selected_clip = None
+                self.selected_clips = []
+                new_time = self.x_to_time(x)
+                self.playhead_time = max(0, new_time)
+                self.playhead_moved.emit(self.playhead_time)
+                self.dragging_playhead = True
         
         self.update()
     
@@ -1231,6 +1314,12 @@ class TimelineCanvas(QWidget):
                 
             self._schedule_throttled_update()
             return
+
+        if self.dragging_selection_box and self.selection_box_start:
+            self.selection_box_end = (x, y)
+            self._background_dirty = True
+            self.update()
+            return
         
         # Update cursor based on edge proximity
         edge_clip, edge = self.get_clip_edge_at(x, y)
@@ -1342,6 +1431,7 @@ class TimelineCanvas(QWidget):
                     next_idx = (current_idx + 1) % len(hit_clips)
                     new_clip = hit_clips[next_idx]
                     self.selected_clip = new_clip.id
+                    self.selected_clips = [new_clip.id]
                     self.clip_selected.emit(new_clip.id)
                     self._background_dirty = True
 
@@ -1350,6 +1440,40 @@ class TimelineCanvas(QWidget):
             self.drag_start_state.clear()
             self._background_dirty = True
             self.update()
+
+        if self.dragging_selection_box and self.selection_box_start and self.selection_box_end:
+            x1, y1 = self.selection_box_start
+            x2, y2 = self.selection_box_end
+            moved = abs(x2 - x1) > 4 or abs(y2 - y1) > 4
+
+            if moved:
+                rect = QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+                box_selected = self.get_clip_ids_in_rect(rect)
+                if self.selection_box_additive:
+                    existing = list(self.selected_clips)
+                    for cid in box_selected:
+                        if cid not in existing:
+                            existing.append(cid)
+                    self.selected_clips = existing
+                else:
+                    self.selected_clips = box_selected
+                self.selected_clip = self.selected_clips[0] if self.selected_clips else None
+                if self.selected_clip:
+                    self.clip_selected.emit(self.selected_clip)
+            elif not self.selection_box_additive:
+                self.selected_clip = None
+                self.selected_clips = []
+                new_time = self.x_to_time(event.position().x())
+                self.playhead_time = max(0, new_time)
+                self.playhead_moved.emit(self.playhead_time)
+
+            self.dragging_selection_box = False
+            self.selection_box_start = None
+            self.selection_box_end = None
+            self.selection_box_additive = False
+            self._background_dirty = True
+            self.update()
+            return
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         """Handle mouse double click - for editing subtitles"""
@@ -1389,10 +1513,18 @@ class TimelineCanvas(QWidget):
         """Handle key press events"""
         if event.key() == Qt.Key.Key_Space:
             event.ignore()  # Let main window handle playback toggle
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
+            self.copy_requested.emit()
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
+            self.paste_requested.emit()
         elif event.key() == Qt.Key.Key_Delete:
             # Delete selected clip
+            if not self.selected_clip and self.selected_clips:
+                self.selected_clip = self.selected_clips[0]
             if self.selected_clip:
                 self.clip_delete_requested.emit(self.selected_clip)
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_E:
+            self.split_requested.emit()
         else:
             super().keyPressEvent(event)
     
