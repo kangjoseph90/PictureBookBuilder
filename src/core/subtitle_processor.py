@@ -410,12 +410,21 @@ class SubtitleProcessor:
         seg2: dict
     ) -> dict:
         """Merge two adjacent segments"""
+        text1 = self.serialize_subtitle_text(seg1.get('text', ''))
+        text2 = self.serialize_subtitle_text(seg2.get('text', ''))
+        merged_text = " ".join(part for part in (text1, text2) if part).strip()
         return {
-            'text': f"{seg1['text']} {seg2['text']}".strip(),
+            'text': merged_text,
             'start_time': seg1['start_time'],
             'end_time': seg2['end_time'],
             'words': (seg1.get('words') or []) + (seg2.get('words') or [])
         }
+
+    def serialize_subtitle_text(self, text: str) -> str:
+        """Normalize subtitle text into a single line with clean spacing."""
+        if not text:
+            return ""
+        return " ".join(text.split())
     
     # ============ NEW API: 텍스트와 타임스탬프 분리 ============
     
