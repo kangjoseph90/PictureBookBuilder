@@ -225,7 +225,12 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.action_process)
         
         tools_menu.addSeparator()
-        
+
+        self.action_serialize_subs = QAction("자막 직렬화", self)
+        self.action_serialize_subs.triggered.connect(self._serialize_subtitles)
+        self.action_serialize_subs.setEnabled(False)
+        tools_menu.addAction(self.action_serialize_subs)
+
         self.action_format_subs = QAction("자막 자동 정리", self)
         self.action_format_subs.triggered.connect(self._auto_format_subtitles)
         self.action_format_subs.setEnabled(False)
@@ -309,6 +314,7 @@ class MainWindow(QMainWindow):
         # Add actions
         toolbar.addAction(self.action_process)
         toolbar.addSeparator()
+        toolbar.addAction(self.action_serialize_subs)
         toolbar.addAction(self.action_format_subs)
         toolbar.addAction(self.action_apply_images)
         
@@ -1251,6 +1257,7 @@ class MainWindow(QMainWindow):
         self.preview_widget.set_timeline_clips(clips)
         
         # Enable subtitle formatting button
+        self.action_serialize_subs.setEnabled(True)
         self.action_format_subs.setEnabled(True)
     
     def _extract_waveform_from_audio(self, audio_segment) -> list[float]:
@@ -2068,46 +2075,46 @@ class MainWindow(QMainWindow):
             return False
 
         return True
+
+    def _can_merge_subtitle_clips(self, clip1, clip2):
+        """Check whether two subtitle clips can be safely merged."""
+        if not clip1 or not clip2:
+            return False, "병합할 자막을 찾지 못했습니다."
+
+        if getattr(clip1, 'track', None) != getattr(clip2, 'track', None):
+            return False, "같은 트랙의 자막만 병합할 수 있습니다."
+
+        clip1_end = getattr(clip1, 'start', 0.0) + getattr(clip1, 'duration', 0.0)
+        clip2_start = getattr(clip2, 'start', 0.0)
+        if abs(clip1_end - clip2_start) > 0.1:
+            return False, "서로 인접한 자막만 병합할 수 있습니다."
+
+        if getattr(clip1, 'segment_index', -1) != getattr(clip2, 'segment_index', -1):
+            return False, "서로 다른 오디오 세그먼트의 자막은 병합할 수 없습니다."
+
+        if getattr(clip1, 'speaker', '') != getattr(clip2, 'speaker', ''):
+            return False, "서로 다른 화자의 자막은 병합할 수 없습니다."
+
+        clip1_source_end = getattr(clip1, 'offset', 0.0) + getattr(clip1, 'duration', 0.0)
+        clip2_source_start = getattr(clip2, 'offset', 0.0)
+        if abs(clip1_source_end - clip2_source_start) > 0.2:
+            return False, "원본 오디오 범위가 연속적이지 않아 병합할 수 없습니다."
+
+        a1 = self._find_linked_audio_clip_for_subtitle(clip1)
+        a2 = self._find_linked_audio_clip_for_subtitle(clip2)
+        if not a1 or not a2 or getattr(a1, 'id', None) != getattr(a2, 'id', None):
+            return False, "연결된 오디오가 달라 병합할 수 없습니다."
+
+        return True, ""
     
     def _merge_subtitle_clips(self, clip1, clip2):
         """Merge two adjacent subtitle clips"""
         from core.subtitle_processor import SubtitleProcessor
 
-        if not clip1 or not clip2:
-            return
-
-        # Only allow merges that preserve a single audio anchor.
-        # Merging across different segments or with timeline/source gaps produces
-        # a subtitle clip that cannot be reliably split/anchored to audio later.
-        if getattr(clip1, 'track', None) != getattr(clip2, 'track', None):
-            self.statusBar().showMessage("같은 트랙의 자막만 병합할 수 있습니다.")
-            return
-
-        clip1_end = getattr(clip1, 'start', 0.0) + getattr(clip1, 'duration', 0.0)
-        clip2_start = getattr(clip2, 'start', 0.0)
-        if abs(clip1_end - clip2_start) > 0.1:
-            self.statusBar().showMessage("서로 인접한 자막만 병합할 수 있습니다.")
-            return
-
-        if getattr(clip1, 'segment_index', -1) != getattr(clip2, 'segment_index', -1):
-            self.statusBar().showMessage("서로 다른 오디오 세그먼트의 자막은 병합할 수 없습니다.")
-            return
-
-        if getattr(clip1, 'speaker', '') != getattr(clip2, 'speaker', ''):
-            self.statusBar().showMessage("서로 다른 화자의 자막은 병합할 수 없습니다.")
-            return
-
-        # Source continuity guard (offset-based). Allow tiny jitter.
-        clip1_source_end = getattr(clip1, 'offset', 0.0) + getattr(clip1, 'duration', 0.0)
-        clip2_source_start = getattr(clip2, 'offset', 0.0)
-        if abs(clip1_source_end - clip2_source_start) > 0.2:
-            self.statusBar().showMessage("원본 오디오 범위가 연속적이지 않아 병합할 수 없습니다.")
-            return
-
-        a1 = self._find_linked_audio_clip_for_subtitle(clip1)
-        a2 = self._find_linked_audio_clip_for_subtitle(clip2)
-        if not a1 or not a2 or getattr(a1, 'id', None) != getattr(a2, 'id', None):
-            self.statusBar().showMessage("연결된 오디오가 달라 병합할 수 없습니다.")
+        can_merge, message = self._can_merge_subtitle_clips(clip1, clip2)
+        if not can_merge:
+            if message:
+                self.statusBar().showMessage(message)
             return
         
         processor = SubtitleProcessor(lead_time_ms=self.runtime_config.subtitle_lead_time_ms)
@@ -2158,6 +2165,81 @@ class MainWindow(QMainWindow):
         playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
         self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
         self.statusBar().showMessage("자막이 병합되었습니다.")
+
+    def _serialize_subtitles(self):
+        """Serialize subtitles into single-line text and merge all mergeable clips."""
+        from core.subtitle_processor import SubtitleProcessor
+
+        subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "subtitle"]
+        if not subtitle_clips:
+            self.statusBar().showMessage("자막 클립이 없습니다.")
+            return
+
+        old_clips_list = copy.deepcopy(self.timeline_widget.canvas.clips)
+        processor = SubtitleProcessor(lead_time_ms=self.runtime_config.subtitle_lead_time_ms)
+
+        serialized_clips = []
+        merged_count = 0
+        normalized_count = 0
+
+        track_map = {}
+        for clip in subtitle_clips:
+            track_map.setdefault(clip.track, []).append(clip)
+
+        for track_subs in track_map.values():
+            track_subs = sorted(track_subs, key=lambda c: c.start)
+            for clip in track_subs:
+                normalized_text = processor.serialize_subtitle_text(clip.name)
+                if normalized_text != clip.name:
+                    clip.name = normalized_text
+                    normalized_count += 1
+
+            i = 0
+            while i < len(track_subs):
+                current = track_subs[i]
+                j = i + 1
+                while j < len(track_subs):
+                    next_clip = track_subs[j]
+                    can_merge, _ = self._can_merge_subtitle_clips(current, next_clip)
+                    if not can_merge:
+                        break
+
+                    merged = processor.merge_segments(
+                        {'text': current.name, 'start_time': current.offset,
+                         'end_time': current.offset + current.duration, 'words': current.words},
+                        {'text': next_clip.name, 'start_time': next_clip.offset,
+                         'end_time': next_clip.offset + next_clip.duration, 'words': next_clip.words}
+                    )
+
+                    current.name = merged['text']
+                    current.duration = (next_clip.start + next_clip.duration) - current.start
+                    current.words = merged['words']
+                    merged_count += 1
+                    j += 1
+
+                serialized_clips.append(current)
+                i = j
+
+        existing_non_subtitle_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type != "subtitle"]
+        new_clips_list = existing_non_subtitle_clips + serialized_clips
+        self.timeline_widget.canvas.clips = new_clips_list
+
+        cmd = ReplaceAllClipsCommand(
+            self.timeline_widget.canvas,
+            old_clips=old_clips_list,
+            new_clips=copy.deepcopy(new_clips_list),
+            description="Serialize subtitles",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        self._update_undo_redo_actions()
+
+        self.timeline_widget.canvas._background_dirty = True
+        self.timeline_widget.canvas.update()
+
+        playhead_ms = int(self.timeline_widget.canvas.playhead_time * 1000)
+        self.preview_widget.set_timeline_clips(self.timeline_widget.canvas.clips, playhead_ms)
+        self.statusBar().showMessage(f"자막 직렬화 완료: {merged_count}개 병합, {normalized_count}개 공백 정리")
     
     def _auto_format_subtitles(self):
         """Apply automatic formatting to all subtitle clips (NEW API)"""
@@ -3324,6 +3406,7 @@ class MainWindow(QMainWindow):
         
         # Reset buttons
         self.action_process.setEnabled(False)
+        self.action_serialize_subs.setEnabled(False)
         self.action_format_subs.setEnabled(False)
         self.action_export_srt.setEnabled(False)
         self.action_export_xml.setEnabled(False)
@@ -3639,6 +3722,7 @@ class MainWindow(QMainWindow):
         
         # Enable buttons if we have clips
         if clips:
+            self.action_serialize_subs.setEnabled(True)
             self.action_format_subs.setEnabled(True)
             self.action_export_srt.setEnabled(True)
             self.action_export_xml.setEnabled(True)
