@@ -114,9 +114,30 @@ class RuntimeConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "RuntimeConfig":
         """Create from dictionary for project load."""
+        # Legacy key migration (older project files)
+        legacy_key_map = {
+            'line_soft_cap': 'subtitle_line_soft_cap',
+            'line_hard_cap': 'subtitle_line_hard_cap',
+            'max_lines': 'subtitle_max_lines',
+            'auto_params': 'subtitle_auto_params',
+        }
+        for old_key, new_key in legacy_key_map.items():
+            if old_key in data and new_key not in data:
+                data[new_key] = data[old_key]
+
         # Filter only known fields to avoid errors with old/new config versions
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
+
+        # Normalize legacy bool strings
+        auto_params = filtered_data.get('subtitle_auto_params')
+        if isinstance(auto_params, str):
+            lowered = auto_params.strip().lower()
+            if lowered in ('true', '1', 'yes', 'on'):
+                filtered_data['subtitle_auto_params'] = True
+            elif lowered in ('false', '0', 'no', 'off'):
+                filtered_data['subtitle_auto_params'] = False
+
         # Backward compatibility:
         # Old project files may have manual subtitle values but no auto_params flag.
         # In that case, default to manual mode so users can adjust line settings.
