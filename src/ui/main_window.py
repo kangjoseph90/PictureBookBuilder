@@ -472,8 +472,10 @@ class MainWindow(QMainWindow):
         self.timeline_widget.canvas.image_dropped.connect(self._on_image_dropped)
         self.timeline_widget.canvas.clip_delete_requested.connect(self._on_clip_delete_requested)
         self.timeline_widget.canvas.copy_requested.connect(self._on_copy_requested)
+        self.timeline_widget.canvas.cut_requested.connect(self._on_cut_requested)
         self.timeline_widget.canvas.paste_requested.connect(self._on_paste_requested)
         self.timeline_widget.canvas.split_requested.connect(self._on_split_requested)
+        self.timeline_widget.canvas.canvas_context_menu.connect(self._on_canvas_context_menu)
         
         timeline_group_layout.addWidget(self.timeline_widget)
         timeline_layout.addWidget(timeline_group)
@@ -1557,41 +1559,31 @@ class MainWindow(QMainWindow):
     def _on_clip_context_menu(self, clip_id: str, pos):
         """Show context menu for clip operations"""
         from PyQt6.QtWidgets import QMenu
-        
-        # Find the clip
-        clip = None
-        for c in self.timeline_widget.canvas.clips:
-            if c.id == clip_id:
-                clip = c
-                break
-        
+
+        clip = next((c for c in self.timeline_widget.canvas.clips if c.id == clip_id), None)
         if not clip:
             return
-        
+
         menu = QMenu(self)
-        
+
         if clip.clip_type == "subtitle":
-            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
-            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
-            menu.addSeparator()
             edit_action = menu.addAction("텍스트 수정")
             split_action = menu.addAction("자막 나누기...")
             break_action = menu.addAction("자막 줄바꿈...")
-            menu.addSeparator()
-            
-            # Find if there's a next subtitle clip
             next_clip = self._find_adjacent_subtitle(clip, direction=1)
-            merge_action = None
-            if next_clip:
-                merge_action = menu.addAction("다음 자막과 병합")
-            
+            merge_action = menu.addAction("다음 자막과 병합") if next_clip else None
+            menu.addSeparator()
+            select_follow_track_action = menu.addAction("뒤 트랙 선택")
+            select_follow_all_action = menu.addAction("뒤 클립 선택")
+            menu.addSeparator()
+            copy_action = menu.addAction("복사")
+            cut_action = menu.addAction("잘라내기")
+            menu.addSeparator()
+            delete_action = menu.addAction("삭제")
+
             action = menu.exec(pos)
-            
-            if action == select_follow_track_action:
-                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
-            elif action == select_follow_all_action:
-                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
-            elif action == edit_action:
+
+            if action == edit_action:
                 self._on_clip_double_clicked(clip_id)
             elif action == split_action:
                 self._show_subtitle_editor(clip)
@@ -1599,55 +1591,83 @@ class MainWindow(QMainWindow):
                 self._show_subtitle_line_break_editor(clip)
             elif merge_action and action == merge_action:
                 self._merge_subtitle_clips(clip, next_clip)
-        
-        elif clip.clip_type == "image":
-            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
-            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
-            menu.addSeparator()
-            change_image_action = menu.addAction("이미지 변경...")
-            realign_action = menu.addAction("여기서 다시 정렬")
-            split_action = menu.addAction("현재 재생헤드에서 분할")
-            menu.addSeparator()
-            delete_action = menu.addAction("삭제")
-            
-            action = menu.exec(pos)
-            
-            if action == select_follow_track_action:
+            elif action == select_follow_track_action:
                 self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
             elif action == select_follow_all_action:
                 self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
-            elif action == change_image_action:
-                self._change_clip_image(clip)
-            elif action == realign_action:
-                self._realign_images_from(clip)
-            elif action == split_action:
-                self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
+            elif action == copy_action:
+                self._on_copy_requested()
+            elif action == cut_action:
+                self._on_cut_requested()
             elif action == delete_action:
                 selected = self._get_selected_clips()
                 if len(selected) > 1 and clip in selected:
                     self._delete_clips(selected)
                 else:
                     self._delete_clip(clip)
-        
-        elif clip.clip_type == "audio":
-            select_follow_track_action = menu.addAction("뒤 클립 선택(현재 트랙)")
-            select_follow_all_action = menu.addAction("뒤 클립 선택(전체 트랙)")
-            menu.addSeparator()
-            insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
+
+        elif clip.clip_type == "image":
+            change_image_action = menu.addAction("이미지 변경...")
+            realign_action = menu.addAction("여기서 다시 정렬")
             split_action = menu.addAction("현재 재생헤드에서 분할")
             menu.addSeparator()
+            select_follow_track_action = menu.addAction("뒤 트랙 선택")
+            select_follow_all_action = menu.addAction("뒤 클립 선택")
+            menu.addSeparator()
+            copy_action = menu.addAction("복사")
+            cut_action = menu.addAction("잘라내기")
+            menu.addSeparator()
             delete_action = menu.addAction("삭제")
-            
+
             action = menu.exec(pos)
-            
-            if action == select_follow_track_action:
+
+            if action == change_image_action:
+                self._change_clip_image(clip)
+            elif action == realign_action:
+                self._realign_images_from(clip)
+            elif action == split_action:
+                self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
+            elif action == select_follow_track_action:
                 self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
             elif action == select_follow_all_action:
                 self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
-            elif action == insert_image_action:
+            elif action == copy_action:
+                self._on_copy_requested()
+            elif action == cut_action:
+                self._on_cut_requested()
+            elif action == delete_action:
+                selected = self._get_selected_clips()
+                if len(selected) > 1 and clip in selected:
+                    self._delete_clips(selected)
+                else:
+                    self._delete_clip(clip)
+
+        elif clip.clip_type == "audio":
+            insert_image_action = menu.addAction("이 위치에 이미지 삽입...")
+            split_action = menu.addAction("현재 재생헤드에서 분할")
+            menu.addSeparator()
+            select_follow_track_action = menu.addAction("뒤 트랙 선택")
+            select_follow_all_action = menu.addAction("뒤 클립 선택")
+            menu.addSeparator()
+            copy_action = menu.addAction("복사")
+            cut_action = menu.addAction("잘라내기")
+            menu.addSeparator()
+            delete_action = menu.addAction("삭제")
+
+            action = menu.exec(pos)
+
+            if action == insert_image_action:
                 self._insert_image_at_clip(clip)
             elif action == split_action:
                 self._split_clip_at_time(clip, self.timeline_widget.canvas.playhead_time)
+            elif action == select_follow_track_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=True)
+            elif action == select_follow_all_action:
+                self.timeline_widget.canvas.select_following_from_clip_id(clip_id, same_track_only=False)
+            elif action == copy_action:
+                self._on_copy_requested()
+            elif action == cut_action:
+                self._on_cut_requested()
             elif action == delete_action:
                 selected = self._get_selected_clips()
                 if len(selected) > 1 and clip in selected:
@@ -1673,6 +1693,30 @@ class MainWindow(QMainWindow):
         self.clipboard_clips = [copy.deepcopy(c) for c in selected]
         self.clipboard_anchor_time = min(c.start for c in selected)
         self.statusBar().showMessage(f"{len(selected)}개 클립을 복사했습니다.")
+
+    def _on_cut_requested(self):
+        """Cut selected clips: copy to clipboard then delete."""
+        selected = sorted(self._get_selected_clips(), key=lambda c: c.start)
+        if not selected:
+            self.statusBar().showMessage("잘라낼 클립이 선택되지 않았습니다.")
+            return
+        self.clipboard_clips = [copy.deepcopy(c) for c in selected]
+        self.clipboard_anchor_time = min(c.start for c in selected)
+        if len(selected) > 1:
+            self._delete_clips(selected)
+        else:
+            self._delete_clip(selected[0])
+        self.statusBar().showMessage(f"{len(selected)}개 클립을 잘라냈습니다.")
+
+    def _on_canvas_context_menu(self, pos):
+        """Show context menu when right-clicking on empty timeline space."""
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        paste_action = menu.addAction("붙여넣기")
+        paste_action.setEnabled(bool(self.clipboard_clips))
+        action = menu.exec(pos)
+        if action == paste_action:
+            self._on_paste_requested()
 
     def _on_paste_requested(self):
         """Paste copied clips at the current playhead."""

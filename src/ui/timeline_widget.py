@@ -34,8 +34,10 @@ class TimelineCanvas(QWidget):
     clip_context_menu = pyqtSignal(str, object)  # Emits clip id and QPoint for context menu
     clip_delete_requested = pyqtSignal(str)  # Emits clip id when delete key pressed
     copy_requested = pyqtSignal()
+    cut_requested = pyqtSignal()
     paste_requested = pyqtSignal()
     split_requested = pyqtSignal()
+    canvas_context_menu = pyqtSignal(object)  # Emits QPoint for right-click on empty space
     playhead_moved = pyqtSignal(float)  # Emits time in seconds
     image_dropped = pyqtSignal(str, float)  # Emits image path and timeline position
     view_changed = pyqtSignal()  # Emits when zoom/scroll/size changes
@@ -1126,6 +1128,9 @@ class TimelineCanvas(QWidget):
                     self.selected_clip = None
                     self.selected_clips = []
                     self._background_dirty = True
+            elif event.button() == Qt.MouseButton.RightButton:
+                # Right-click on empty space: show canvas context menu
+                self.canvas_context_menu.emit(event.globalPosition().toPoint())
             else:
                 self._background_dirty = True
                 self.selected_clip = None
@@ -1561,6 +1566,8 @@ class TimelineCanvas(QWidget):
             event.ignore()  # Let main window handle playback toggle
         elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
             self.copy_requested.emit()
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_X:
+            self.cut_requested.emit()
         elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
             self.paste_requested.emit()
         elif event.key() == Qt.Key.Key_Delete:
