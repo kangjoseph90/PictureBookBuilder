@@ -98,7 +98,7 @@ class DraggableImageListWidget(QListWidget):
                 event.modifiers(),
                 event.phase(),
                 event.inverted(),
-                event.source()
+                device=event.device()
             )
             super().wheelEvent(new_event)
 
