@@ -482,10 +482,10 @@ class VideoRenderer:
             if len(audio_labels) > 1:
                 filter_lines.append(
                     f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:normalize=0,"
-                    f"apad=whole_dur={total_duration:.6f}[aout]"
+                    f"apad=whole_dur={total_duration:.6f},asetpts=N/SR/TB[aout]"
                 )
             elif audio_labels:
-                filter_lines.append(f"{audio_labels[0]}apad=whole_dur={total_duration:.6f}[aout]")
+                filter_lines.append(f"{audio_labels[0]}apad=whole_dur={total_duration:.6f},asetpts=N/SR/TB[aout]")
             else:
                 filter_lines.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{total_duration:.6f}[aout]")
 
