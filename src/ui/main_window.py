@@ -3605,9 +3605,16 @@ class MainWindow(QMainWindow):
         def make_relative(p: str) -> str:
             if not p:
                 return p
+            # If the path is already relative, leave it unchanged to avoid
+            # reinterpreting it against the current working directory.
+            if not os.path.isabs(p):
+                return p
             try:
-                return os.path.relpath(p, os.path.dirname(path))
+                base_dir = os.path.abspath(os.path.dirname(path))
+                abs_p = os.path.abspath(p)
+                return os.path.relpath(abs_p, base_dir)
             except ValueError:
+                # Fall back to the original path if relpath cannot be computed
                 return p
 
         # Serialize clips
