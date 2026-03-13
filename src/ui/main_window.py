@@ -3509,7 +3509,7 @@ class MainWindow(QMainWindow):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            self._load_project_data(data)
+            self._load_project_data(data, project_path=path)
             self.undo_stack.clear()
             self.project_path = path
             self.mark_clean()
@@ -3535,7 +3535,7 @@ class MainWindow(QMainWindow):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            self._load_project_data(data)
+            self._load_project_data(data, project_path=path)
             self.undo_stack.clear()
             self.project_path = path
             self.mark_clean()
@@ -3599,7 +3599,24 @@ class MainWindow(QMainWindow):
         """Save project data to file. Returns True on success."""
         import json
         from datetime import datetime
+        import os
         
+        # Helper to convert path to relative if possible
+        def make_relative(p: str) -> str:
+            if not p:
+                return p
+            # If the path is already relative, leave it unchanged to avoid
+            # reinterpreting it against the current working directory.
+            if not os.path.isabs(p):
+                return p
+            try:
+                base_dir = os.path.abspath(os.path.dirname(path))
+                abs_p = os.path.abspath(p)
+                return os.path.relpath(abs_p, base_dir)
+            except ValueError:
+                # Fall back to the original path if relpath cannot be computed
+                return p
+
         # Serialize clips
         clips_data = []
         for clip in self.timeline_widget.canvas.clips:
@@ -3619,7 +3636,7 @@ class MainWindow(QMainWindow):
             
             # Add type-specific data
             if clip.clip_type == "image":
-                clip_dict['image_path'] = clip.image_path
+                clip_dict['image_path'] = make_relative(clip.image_path)
             
             # Serialize words if available
             if clip.words:
@@ -3635,13 +3652,19 @@ class MainWindow(QMainWindow):
         # Save script content directly (in case file is moved)
         script_content = self.script_text.toPlainText()
         
+        # Convert audio map paths
+        relative_audio_map = {
+            speaker: make_relative(p) if p else p
+            for speaker, p in self.speaker_audio_map.items()
+        }
+
         project_data = {
             'version': '1.1',  # Bumped for settings support
             'saved_at': datetime.now().isoformat(),
-            'script_path': self.script_path,
+            'script_path': make_relative(self.script_path),
             'script_content': script_content,  # Save script content
-            'image_folder': self.image_folder,
-            'speaker_audio_map': self.speaker_audio_map,
+            'image_folder': make_relative(self.image_folder),
+            'speaker_audio_map': relative_audio_map,
             'clips': clips_data,
             'settings': self.runtime_config.to_dict(),  # Save settings
         }
@@ -3659,19 +3682,34 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "오류", f"프로젝트를 저장할 수 없습니다:\n{str(e)}")
             return False
     
-    def _load_project_data(self, data: dict):
+    def _load_project_data(self, data: dict, project_path: str = None):
         """Load project data from dictionary"""
         from ui.timeline_widget import TimelineClip
         from PyQt6.QtGui import QColor
+        import os
+
+        # Helper to resolve paths relative to the project directory
+        def resolve_path(path: str) -> str:
+            if not path or not project_path:
+                return path
+            if os.path.isabs(path):
+                return path
+            return os.path.normpath(os.path.join(os.path.dirname(project_path), path))
         
         # Clear image cache before loading new project
         from .image_cache import get_image_cache
         get_image_cache().clear()
         
         # Load basic info
-        self.script_path = data.get('script_path')
-        self.image_folder = data.get('image_folder')
-        self.speaker_audio_map = data.get('speaker_audio_map', {})
+        self.script_path = resolve_path(data.get('script_path'))
+        self.image_folder = resolve_path(data.get('image_folder'))
+
+        # Resolve audio map paths
+        raw_audio_map = data.get('speaker_audio_map', {})
+        self.speaker_audio_map = {
+            speaker: resolve_path(path) if path else path
+            for speaker, path in raw_audio_map.items()
+        }
         
         # Update canvas map
         self.timeline_widget.canvas.speaker_audio_map = self.speaker_audio_map
@@ -3715,8 +3753,10 @@ class MainWindow(QMainWindow):
             
             # Validate image path exists for image clips
             image_path = clip_data.get('image_path')
-            if image_path and not Path(image_path).exists():
-                missing_images.append(f"  - {Path(image_path).name}")
+            if image_path:
+                image_path = resolve_path(image_path)
+                if not Path(image_path).exists():
+                    missing_images.append(f"  - {Path(image_path).name}")
             
             clip = TimelineClip(
                 id=clip_data['id'],
