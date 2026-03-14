@@ -3605,16 +3605,9 @@ class MainWindow(QMainWindow):
         def make_relative(p: str) -> str:
             if not p:
                 return p
-            # If the path is already relative, leave it unchanged to avoid
-            # reinterpreting it against the current working directory.
-            if not os.path.isabs(p):
-                return p
             try:
-                base_dir = os.path.abspath(os.path.dirname(path))
-                abs_p = os.path.abspath(p)
-                return os.path.relpath(abs_p, base_dir)
+                return os.path.relpath(p, os.path.dirname(path))
             except ValueError:
-                # Fall back to the original path if relpath cannot be computed
                 return p
 
         # Serialize clips
@@ -3636,7 +3629,8 @@ class MainWindow(QMainWindow):
             
             # Add type-specific data
             if clip.clip_type == "image":
-                clip_dict['image_path'] = make_relative(clip.image_path)
+                clip_dict['image_path'] = clip.image_path
+                clip_dict['image_path_relative'] = make_relative(clip.image_path)
             
             # Serialize words if available
             if clip.words:
@@ -3661,10 +3655,13 @@ class MainWindow(QMainWindow):
         project_data = {
             'version': '1.1',  # Bumped for settings support
             'saved_at': datetime.now().isoformat(),
-            'script_path': make_relative(self.script_path),
+            'script_path': self.script_path,
+            'script_path_relative': make_relative(self.script_path),
             'script_content': script_content,  # Save script content
-            'image_folder': make_relative(self.image_folder),
-            'speaker_audio_map': relative_audio_map,
+            'image_folder': self.image_folder,
+            'image_folder_relative': make_relative(self.image_folder),
+            'speaker_audio_map': self.speaker_audio_map,
+            'speaker_audio_map_relative': relative_audio_map,
             'clips': clips_data,
             'settings': self.runtime_config.to_dict(),  # Save settings
         }
@@ -3687,29 +3684,41 @@ class MainWindow(QMainWindow):
         from ui.timeline_widget import TimelineClip
         from PyQt6.QtGui import QColor
         import os
-
-        # Helper to resolve paths relative to the project directory
-        def resolve_path(path: str) -> str:
-            if not path or not project_path:
-                return path
-            if os.path.isabs(path):
-                return path
-            return os.path.normpath(os.path.join(os.path.dirname(project_path), path))
         
+        # Helper to resolve paths relative to the project directory
+        def resolve_path(abs_path: str, rel_path: str) -> str:
+            # 1. Try absolute path first
+            if abs_path and os.path.exists(abs_path):
+                return abs_path
+
+            # 2. Try relative path if project_path is known
+            if rel_path and project_path:
+                resolved_rel = os.path.normpath(os.path.join(os.path.dirname(project_path), rel_path))
+                if os.path.exists(resolved_rel):
+                    return resolved_rel
+
+            # 3. Fallback to original abs_path (might be missing, but keeps original string)
+            return abs_path
+
         # Clear image cache before loading new project
         from .image_cache import get_image_cache
         get_image_cache().clear()
         
         # Load basic info
-        self.script_path = resolve_path(data.get('script_path'))
-        self.image_folder = resolve_path(data.get('image_folder'))
+        self.script_path = resolve_path(data.get('script_path'), data.get('script_path_relative'))
+        self.image_folder = resolve_path(data.get('image_folder'), data.get('image_folder_relative'))
 
         # Resolve audio map paths
         raw_audio_map = data.get('speaker_audio_map', {})
-        self.speaker_audio_map = {
-            speaker: resolve_path(path) if path else path
-            for speaker, path in raw_audio_map.items()
-        }
+        raw_audio_map_relative = data.get('speaker_audio_map_relative', {})
+
+        self.speaker_audio_map = {}
+        # Merge keys from both dicts in case some are only in one
+        all_speakers = set(raw_audio_map.keys()) | set(raw_audio_map_relative.keys())
+        for speaker in all_speakers:
+            abs_p = raw_audio_map.get(speaker)
+            rel_p = raw_audio_map_relative.get(speaker)
+            self.speaker_audio_map[speaker] = resolve_path(abs_p, rel_p) if abs_p or rel_p else abs_p
         
         # Update canvas map
         self.timeline_widget.canvas.speaker_audio_map = self.speaker_audio_map
@@ -3753,9 +3762,11 @@ class MainWindow(QMainWindow):
             
             # Validate image path exists for image clips
             image_path = clip_data.get('image_path')
-            if image_path:
-                image_path = resolve_path(image_path)
-                if not Path(image_path).exists():
+            image_path_rel = clip_data.get('image_path_relative')
+
+            if image_path or image_path_rel:
+                image_path = resolve_path(image_path, image_path_rel)
+                if image_path and not Path(image_path).exists():
                     missing_images.append(f"  - {Path(image_path).name}")
             
             clip = TimelineClip(
