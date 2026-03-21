@@ -407,7 +407,8 @@ class AudioMixer(QObject):
 
             # Use FFmpeg to extract segment and apply volume.
             # Keep -ss AFTER -i for accurate seek on compressed/VBR sources.
-            # (Input seeking can be fast but imprecise and may shift clip start.)
+            # (This intentionally favors slower decode-then-seek behavior over
+            # fast but potentially imprecise input seeking.)
             # -i: input file
             # -ss: start time
             # -t: duration
@@ -485,7 +486,6 @@ class AudioMixer(QObject):
                 # played from offset 0. Applying low-sample-rate correction here
                 # can under-seek (e.g. 5s -> ~2.5s) on some backends.
                 # Keep boosted-path seek in direct timeline milliseconds.
-                seek_correction = 1.0
 
                 # Master volume only (boost baked in)
                 audio_output.setVolume(self._volume)
@@ -493,13 +493,13 @@ class AudioMixer(QObject):
                 # For boosted clips, source is the EXTRACTED segment (offset 0)
                 # Time into clip determines position in temp file
                 time_into_clip = current_position - clip.timeline_start
-                corrected_pos = int(max(0.0, time_into_clip * seek_correction) * 1000)
+                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
 
                 self._active_players[clip.clip_id] = (player, audio_output)
 
                 if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
                     player.setPlaybackRate(self._playback_rate)
-                    player.setPosition(corrected_pos)
+                    player.setPosition(playback_position_ms)
                     if self._playing:
                         player.play()
                 else:
@@ -511,11 +511,11 @@ class AudioMixer(QObject):
                                 # from self._position. Boosted path can spend noticeable time in
                                 # ffmpeg extraction, and using current timeline position here can
                                 # skip into the clip unexpectedly when entering it.
-                                corrected_pos = int(max(0.0, time_into_clip * seek_correction) * 1000)
-                                player.setPosition(corrected_pos)
+                                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
+                                player.setPosition(playback_position_ms)
                                 player.play()
                             else:
-                                player.setPosition(corrected_pos)
+                                player.setPosition(playback_position_ms)
                             try:
                                 player.mediaStatusChanged.disconnect(on_media_status_changed)
                             except Exception:
