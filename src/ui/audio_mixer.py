@@ -35,6 +35,13 @@ class ScheduledClip:
         return self.timeline_end - self.timeline_start
 
 
+# Pre-baked volume for the single max-preview audio asset.
+# Clips with volume > 1.0 are always rendered to a file at this fixed amplitude
+# and played back with runtime gain = (requested_volume / MAX_PREVIEW_VOLUME) so
+# that a single cached file is reused for all volume values in (1.0, 2.0].
+MAX_PREVIEW_VOLUME: float = 2.0
+
+
 class AudioMixer(QObject):
     """
     Real-time audio mixer that plays clips at their scheduled timeline positions.
@@ -43,7 +50,15 @@ class AudioMixer(QObject):
     1. Maintains a list of scheduled clips with their timeline positions
     2. Uses a timer to track current playback position
     3. Starts/stops individual audio players as needed based on position
-    
+
+    Volume > 1.0 strategy
+    ---------------------
+    Rather than generating a unique boosted file per requested volume, a single
+    "max-preview" file is created per (source, offset, duration) segment at
+    MAX_PREVIEW_VOLUME amplitude.  At playback time the runtime gain is scaled
+    to ``master_volume * clip_volume / MAX_PREVIEW_VOLUME`` so the perceived
+    level matches the requested volume without re-encoding.
+
     Signals:
         position_changed: Emitted with current position in milliseconds
         playback_state_changed: Emitted with 'playing', 'paused', or 'stopped'
@@ -75,8 +90,10 @@ class AudioMixer(QObject):
         # These are pre-loaded and ready to seek/play instantly
         self._player_cache: dict[str, tuple[QMediaPlayer, QAudioOutput, float]] = {}
 
-        # Cache for boosted audio temp files
-        # Key: (source_path, offset, duration, volume) -> temp_file_path
+        # Cache for boosted audio temp files.
+        # Key: (source_path, offset, duration) -> temp_file_path
+        # Volume is NOT part of the key because all boosted clips share the same
+        # MAX_PREVIEW_VOLUME file; runtime gain handles the per-clip level.
         self._boosted_files_cache: dict[tuple, str] = {}
 
         # Map clip_id -> temp_file_path to manage ownership and cleanup
@@ -261,9 +278,9 @@ class AudioMixer(QObject):
 
                 # Logic differs for boosted vs normal clips
                 if clip.volume > 1.0:
-                    # For boosted clips, the boost is baked into the file.
-                    # So we just set master volume.
-                    audio_output.setVolume(self._volume)
+                    # Max-volume file is used; scale gain to match requested level.
+                    effective_gain = self._volume * clip.volume / MAX_PREVIEW_VOLUME
+                    audio_output.setVolume(effective_gain)
                 else:
                     # For normal clips, we multiply
                     effective_vol = self._volume * clip.volume
@@ -376,25 +393,28 @@ class AudioMixer(QObject):
         return seek_correction
 
     def _prepare_boosted_audio(self, clip: ScheduledClip) -> Optional[str]:
-        """Prepare a temporary boosted audio file for a clip using FFmpeg.
+        """Prepare (or return cached) the max-volume preview file for a clip.
+
+        A single file at MAX_PREVIEW_VOLUME amplitude is created for each unique
+        (source_path, offset, duration) segment.  The caller is responsible for
+        scaling playback gain to match the actual requested volume.
 
         Args:
-            clip: Clip to boost
+            clip: Clip whose segment should be pre-rendered at max preview volume
 
         Returns:
-            Path to temporary boosted wav file, or None on failure
+            Path to the cached max-volume WAV segment, or None on failure
         """
         if clip.volume <= 1.0:
             return None
 
-        # Key includes offset and duration because we extract just the segment
-        key = (clip.source_path, clip.source_offset, clip.duration, clip.volume)
+        # Cache key does NOT include volume — all volume > 1.0 clips share the
+        # same MAX_PREVIEW_VOLUME file for a given segment.
+        key = (clip.source_path, clip.source_offset, clip.duration)
 
         if key in self._boosted_files_cache:
             path = self._boosted_files_cache[key]
             if os.path.exists(path):
-                # Update ownership if needed, or just return
-                # If this clip already owns a file that is different, we handle that in caller
                 return path
 
         try:
@@ -405,21 +425,25 @@ class AudioMixer(QObject):
             fd, temp_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
 
-            # Use FFmpeg to extract segment and apply volume.
+            # Use FFmpeg to extract segment and apply MAX_PREVIEW_VOLUME.
             # Keep -ss AFTER -i for accurate seek on compressed/VBR sources.
             # (This intentionally favors slower decode-then-seek behavior over
             # fast but potentially imprecise input seeking.)
             # -i: input file
             # -ss: start time
             # -t: duration
-            # -filter:a "volume=X"
+            # -filter:a "volume=X,alimiter": first boost amplitude to
+            #   MAX_PREVIEW_VOLUME, then hard-limit peaks at 0.99 FS to
+            #   prevent clipping.  level=disabled means the limiter does not
+            #   apply further gain normalisation — it only clips peaks above
+            #   the threshold.
             # -y: overwrite
             cmd = [
                 'ffmpeg',
                 '-i', clip.source_path,
                 '-ss', str(clip.source_offset),
                 '-t', str(clip.duration),
-                '-filter:a', f'volume={clip.volume}',
+                '-filter:a', f'volume={MAX_PREVIEW_VOLUME},alimiter=limit=0.99:level=disabled',
                 '-y',
                 temp_path
             ]
@@ -429,18 +453,6 @@ class AudioMixer(QObject):
 
             # Update caches
             self._boosted_files_cache[key] = temp_path
-
-            # Cleanup old file for this clip if it exists and is different
-            if clip.clip_id in self._clip_boosted_file:
-                old_path = self._clip_boosted_file[clip.clip_id]
-                if old_path != temp_path:
-                    # Only delete if no other clip uses it (simple ref counting impossible with tuple keys)
-                    # For simplicity in this session: we trust the cache key logic.
-                    # We only delete if it's NOT in the cache anymore (replaced)?
-                    # Actually, if the key changed (volume changed), the old key is still in cache.
-                    # We should remove old key from cache to prevent unlimited growth?
-                    pass
-
             self._clip_boosted_file[clip.clip_id] = temp_path
 
             return temp_path
@@ -453,7 +465,7 @@ class AudioMixer(QObject):
         """Get or create a dedicated player for a boosted clip."""
         if clip_id in self._boosted_players:
             player, output = self._boosted_players[clip_id]
-            # Verify source is correct (might have changed volume/file)
+            # Verify source is correct (may have changed if segment params changed)
             current_source = player.source().toLocalFile()
             if current_source != boosted_path:
                 player.setSource(QUrl.fromLocalFile(boosted_path))
@@ -461,7 +473,7 @@ class AudioMixer(QObject):
 
         # Create new
         audio_output = QAudioOutput()
-        audio_output.setVolume(self._volume) # Master volume only
+        audio_output.setVolume(self._volume)  # Caller sets exact gain after creation
 
         player = QMediaPlayer()
         player.setAudioOutput(audio_output)
@@ -487,8 +499,10 @@ class AudioMixer(QObject):
                 # can under-seek (e.g. 5s -> ~2.5s) on some backends.
                 # Keep boosted-path seek in direct timeline milliseconds.
 
-                # Master volume only (boost baked in)
-                audio_output.setVolume(self._volume)
+                # Scale runtime gain so perceived level matches requested volume:
+                #   effectiveGain = master_volume * clip_volume / MAX_PREVIEW_VOLUME
+                effective_gain = self._volume * clip.volume / MAX_PREVIEW_VOLUME
+                audio_output.setVolume(effective_gain)
 
                 # For boosted clips, source is the EXTRACTED segment (offset 0)
                 # Time into clip determines position in temp file
@@ -657,22 +671,27 @@ class AudioMixer(QObject):
 
             elif needs_boost:
                 # Boosted -> Boosted.
-                # Check if we need to regenerate due to volume change
-                # We do this by checking if the _prepare_boosted_audio returns a different path
-                # (since key includes volume) or simply if we assume it changed.
+                # All boosted clips share the same MAX_PREVIEW_VOLUME file for a given
+                # (source, offset, duration).  Check whether the cached file still
+                # matches; if yes, only the runtime gain needs updating (no re-encode).
+                expected_key = (clip.source_path, clip.source_offset, clip.duration)
+                cached_path = self._boosted_files_cache.get(expected_key)
+                current_player, current_output = self._active_players[clip.clip_id]
+                current_source = current_player.source().toLocalFile()
 
-                # Ideally we only restart if the path changed.
-                # But calculating path requires calling _prepare_boosted_audio (which might run ffmpeg).
-                # Since we already optimized UI to NOT call this during drag, we can assume
-                # any call here is a committed change (or legitimate update).
-
-                # So we restart to be safe and apply new file.
-                if self._playing:
-                    self._stop_clip(clip.clip_id)
-                    if clip.timeline_start <= self._position < clip.timeline_end:
-                        self._start_clip(clip, self._position)
+                if cached_path and os.path.exists(cached_path) and current_source == cached_path:
+                    # Same segment file — volume change only; update gain in-place.
+                    effective_gain = self._volume * clip.volume / MAX_PREVIEW_VOLUME
+                    current_output.setVolume(effective_gain)
                 else:
-                    self._stop_clip(clip.clip_id)
+                    # Segment parameters changed (source/offset/duration); must restart
+                    # so that _start_clip builds a new max-volume file.
+                    if self._playing:
+                        self._stop_clip(clip.clip_id)
+                        if clip.timeline_start <= self._position < clip.timeline_end:
+                            self._start_clip(clip, self._position)
+                    else:
+                        self._stop_clip(clip.clip_id)
 
             else:
                 # Normal -> Normal. Just update volume multiplier.
