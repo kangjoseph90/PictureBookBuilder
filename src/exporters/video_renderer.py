@@ -79,6 +79,41 @@ class VideoRenderer:
                     return (enc, opts)
         return ("libx264", ["-preset", "medium", "-threads", "0"])
 
+    def _prepare_standardized_image(self, original_path: str) -> str:
+        """Create a standardized PNG (resized/padded) for the concat demuxer"""
+        try:
+            # Load original
+            orig = QImage(original_path)
+            if orig.isNull():
+                return ""
+            
+            # Create target image
+            std = QImage(self.width, self.height, QImage.Format.Format_ARGB32)
+            std.fill(QColor(0, 0, 0)) # Black background
+            
+            # Scale and center
+            scaled = orig.scaled(
+                self.width, self.height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            # Draw on center
+            painter = QPainter(std)
+            x = (self.width - scaled.width()) // 2
+            y = (self.height - scaled.height()) // 2
+            painter.drawImage(x, y, scaled)
+            painter.end()
+            
+            # Save to temp PNG
+            fd, tmp_path = tempfile.mkstemp(prefix="pbb_std_", suffix=".png")
+            os.close(fd)
+            std.save(tmp_path, "PNG")
+            return tmp_path
+        except Exception as e:
+            print(f"Error standardizing image {original_path}: {e}")
+            return ""
+
     def _run_ffmpeg_with_progress(
         self, cmd: list[str], total_duration: float, start_pct: int, end_pct: int, label: str,
         progress_callback=None, cancel_check=None
@@ -302,14 +337,34 @@ class VideoRenderer:
             # PHASE 1A: Create image video using concat demuxer
             # =================================================================
 
-            # Black frame for gaps (use JPG to match image formats in concat)
+            # Standardize all unique images to target resolution/format for concat safety
+            unique_images = list(set(p for p, _ in visuals if p))
+            std_image_map = {}
+            if unique_images:
+                if progress_callback:
+                    progress_callback(5, "이미지 규격화 중...")
+                
+                # Standardize in parallel for speed
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(unique_images))) as ex:
+                    futures = {ex.submit(self._prepare_standardized_image, p): p for p in unique_images}
+                    for future in concurrent.futures.as_completed(futures):
+                        orig_p = futures[future]
+                        try:
+                            std_p = future.result()
+                            if std_p:
+                                std_image_map[orig_p] = std_p
+                                temp_files.append(std_p)
+                        except Exception as e:
+                            print(f"Failed to standardize {orig_p}: {e}")
+
+            # Black frame for gaps
             black_path = None
             if any(p is None for p, _ in visuals):
                 img = QImage(self.width, self.height, QImage.Format.Format_RGB32)
                 img.fill(QColor(0, 0, 0))
-                fd, black_path = tempfile.mkstemp(prefix="pbb_black_", suffix=".jpg")
+                fd, black_path = tempfile.mkstemp(prefix="pbb_black_", suffix=".png")
                 os.close(fd)
-                img.save(black_path, "JPG", 100)
+                img.save(black_path, "PNG")
                 temp_files.append(black_path)
 
             # Concat file
@@ -320,7 +375,11 @@ class VideoRenderer:
             with open(concat_path, "w", encoding="utf-8") as f:
                 last_path = None
                 for img_path, dur in visuals:
-                    p = (img_path or black_path).replace("\\", "/").replace("'", "'\\''")
+                    # Use standardized path if available, otherwise fallback to original or black
+                    target_p = std_image_map.get(img_path, img_path) if img_path else black_path
+                    if not target_p: continue
+                    
+                    p = str(target_p).replace("\\", "/").replace("'", "'\\''")
                     f.write(f"file '{p}'\nduration {dur:.6f}\n")
                     last_path = p
                 # FFmpeg concat demuxer bug: last file's duration is ignored
@@ -335,11 +394,10 @@ class VideoRenderer:
             cmd = [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
                 "-f", "concat", "-safe", "0", "-i", concat_path,
-                "-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-                       f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                # No need for complex scale/pad here as images are already standardized
                 "-c:v", self._encoder_name, *self._encoder_opts,
                 "-pix_fmt", "yuv420p", "-r", str(self.fps),
-                "-t", str(total_duration),  # Force exact duration
+                "-t", str(total_duration),
                 image_video
             ]
             if not self._run_ffmpeg_with_progress(
