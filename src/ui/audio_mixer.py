@@ -487,8 +487,7 @@ class AudioMixer(QObject):
                 # For boosted clips, source is the EXTRACTED segment (offset 0)
                 # Time into clip determines position in temp file
                 time_into_clip = current_position - clip.timeline_start
-                clamped_position_ms = int(max(0.0, time_into_clip) * 1000)
-                corrected_pos = int(clamped_position_ms * seek_correction)
+                corrected_pos = int(max(0.0, time_into_clip * seek_correction) * 1000)
 
                 self._active_players[clip.clip_id] = (player, audio_output)
 
@@ -503,9 +502,8 @@ class AudioMixer(QObject):
                             player.setPlaybackRate(self._playback_rate)
                             if self._playing:
                                 current_tic = self._position - clip.timeline_start
-                                clamped_playback_position_ms = int(max(0.0, current_tic) * 1000)
-                                corrected_playback_pos = int(clamped_playback_position_ms * seek_correction)
-                                player.setPosition(corrected_playback_pos)
+                                corrected_pos = int(max(0.0, current_tic * seek_correction) * 1000)
+                                player.setPosition(corrected_pos)
                                 player.play()
                             else:
                                 player.setPosition(corrected_pos)
