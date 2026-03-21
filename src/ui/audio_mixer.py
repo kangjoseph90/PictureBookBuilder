@@ -353,6 +353,14 @@ class AudioMixer(QObject):
         player.setSource(QUrl.fromLocalFile(audio_path))
         
         # Determine seek correction for non-standard sample rates (Qt/FFmpeg bug workaround)
+        seek_correction = self._get_seek_correction(audio_path)
+        
+        # Cache and return
+        self._player_cache[speaker] = (player, audio_output, seek_correction)
+        return self._player_cache[speaker]
+
+    def _get_seek_correction(self, audio_path: str) -> float:
+        """Calculate seek correction for low sample-rate WAV files."""
         seek_correction = 1.0
         try:
             import wave
@@ -365,10 +373,7 @@ class AudioMixer(QObject):
                     seek_correction = framerate / 48000.0
         except Exception:
             pass
-        
-        # Cache and return
-        self._player_cache[speaker] = (player, audio_output, seek_correction)
-        return self._player_cache[speaker]
+        return seek_correction
 
     def _prepare_boosted_audio(self, clip: ScheduledClip) -> Optional[str]:
         """Prepare a temporary boosted audio file for a clip using FFmpeg.
@@ -400,17 +405,20 @@ class AudioMixer(QObject):
             fd, temp_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
 
-            # Use FFmpeg to extract segment and apply volume
+            # Use FFmpeg to extract segment and apply volume.
+            # Keep -ss AFTER -i for accurate seek on compressed/VBR sources.
+            # (This intentionally favors slower decode-then-seek behavior over
+            # fast but potentially imprecise input seeking.)
+            # -i: input file
             # -ss: start time
             # -t: duration
-            # -i: input file
             # -filter:a "volume=X"
             # -y: overwrite
             cmd = [
                 'ffmpeg',
+                '-i', clip.source_path,
                 '-ss', str(clip.source_offset),
                 '-t', str(clip.duration),
-                '-i', clip.source_path,
                 '-filter:a', f'volume={clip.volume}',
                 '-y',
                 temp_path
@@ -474,6 +482,10 @@ class AudioMixer(QObject):
             boosted_path = self._prepare_boosted_audio(clip)
             if boosted_path:
                 player, audio_output = self._get_or_create_boosted_player(clip.clip_id, boosted_path)
+                # Boosted clips are rendered to temporary WAV segments and then
+                # played from offset 0. Applying low-sample-rate correction here
+                # can under-seek (e.g. 5s -> ~2.5s) on some backends.
+                # Keep boosted-path seek in direct timeline milliseconds.
 
                 # Master volume only (boost baked in)
                 audio_output.setVolume(self._volume)
@@ -481,13 +493,13 @@ class AudioMixer(QObject):
                 # For boosted clips, source is the EXTRACTED segment (offset 0)
                 # Time into clip determines position in temp file
                 time_into_clip = current_position - clip.timeline_start
-                source_position_ms = int(time_into_clip * 1000)
+                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
 
                 self._active_players[clip.clip_id] = (player, audio_output)
 
                 if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
                     player.setPlaybackRate(self._playback_rate)
-                    player.setPosition(source_position_ms)
+                    player.setPosition(playback_position_ms)
                     if self._playing:
                         player.play()
                 else:
@@ -495,11 +507,15 @@ class AudioMixer(QObject):
                         if status == QMediaPlayer.MediaStatus.LoadedMedia:
                             player.setPlaybackRate(self._playback_rate)
                             if self._playing:
-                                current_tic = self._position - clip.timeline_start
-                                player.setPosition(int(current_tic * 1000))
+                                # Use the originally scheduled position instead of recalculating
+                                # from self._position. Boosted path can spend noticeable time in
+                                # ffmpeg extraction, and using current timeline position here can
+                                # skip into the clip unexpectedly when entering it.
+                                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
+                                player.setPosition(playback_position_ms)
                                 player.play()
                             else:
-                                player.setPosition(source_position_ms)
+                                player.setPosition(playback_position_ms)
                             try:
                                 player.mediaStatusChanged.disconnect(on_media_status_changed)
                             except Exception:
