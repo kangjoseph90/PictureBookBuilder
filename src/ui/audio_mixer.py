@@ -75,16 +75,9 @@ class AudioMixer(QObject):
         # These are pre-loaded and ready to seek/play instantly
         self._player_cache: dict[str, tuple[QMediaPlayer, QAudioOutput, float]] = {}
 
-        # Cache for boosted audio temp files
-        # Key: (source_path, offset, duration, volume) -> temp_file_path
-        self._boosted_files_cache: dict[tuple, str] = {}
-
-        # Map clip_id -> temp_file_path to manage ownership and cleanup
-        self._clip_boosted_file: dict[str, str] = {}
-
-        # Dedicated players for boosted clips (since they can't share the speaker player)
-        # Key: clip_id -> (player, audio_output)
-        self._boosted_players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
+        # Global boosted files cache
+        # Key: speaker -> temp_file_path (2.0x volume, 48000Hz)
+        self._speaker_boosted_files: dict[str, str] = {}
         
         # Minimum duration enforced (e.g. by other tracks)
         self._min_duration: float = 0.0
@@ -250,24 +243,12 @@ class AudioMixer(QObject):
         """
         self._volume = max(0.0, min(1.0, volume))
         
-        # Update volume on all cached players (global players)
-        for speaker, (player, audio_output, _) in self._player_cache.items():
-            audio_output.setVolume(self._volume)
-            
         # Update active clips
         for clip in self.clips:
             if clip.clip_id in self._active_players:
                 player, audio_output = self._active_players[clip.clip_id]
-
-                # Logic differs for boosted vs normal clips
-                if clip.volume > 1.0:
-                    # For boosted clips, the boost is baked into the file.
-                    # So we just set master volume.
-                    audio_output.setVolume(self._volume)
-                else:
-                    # For normal clips, we multiply
-                    effective_vol = self._volume * clip.volume
-                    audio_output.setVolume(effective_vol)
+                effective_vol = self._volume * (clip.volume / 2.0)
+                audio_output.setVolume(effective_vol)
 
     def _update_position(self):
         """Timer callback to update position and manage clips"""
@@ -324,6 +305,35 @@ class AudioMixer(QObject):
         for clip_id in to_stop:
             self._stop_clip(clip_id)
             
+    def _get_or_create_boosted_speaker_file(self, speaker: str, original_path: str) -> Optional[str]:
+        """Get or create a 2.0x volume boosted WAV file for a speaker."""
+        if speaker in self._speaker_boosted_files:
+            path = self._speaker_boosted_files[speaker]
+            if os.path.exists(path):
+                return path
+
+        try:
+            if not original_path or not os.path.exists(original_path):
+                return None
+
+            fd, temp_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+
+            cmd = [
+                'ffmpeg',
+                '-i', original_path,
+                '-filter:a', 'volume=2.0',
+                '-ar', '48000',
+                '-y',
+                temp_path
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._speaker_boosted_files[speaker] = temp_path
+            return temp_path
+        except Exception as e:
+            print(f"Failed to create boosted speaker file: {e}")
+            return None
+
     def _get_or_create_cached_player(self, speaker: str) -> Optional[tuple[QMediaPlayer, QAudioOutput, float]]:
         """Get a cached player for a speaker, or create and cache a new one.
         
@@ -341,135 +351,27 @@ class AudioMixer(QObject):
         audio_path = self.speaker_audio_paths.get(speaker)
         if not audio_path or not Path(audio_path).exists():
             return None
+
+        # Create 2.0x boosted file to handle volume amplification
+        boosted_path = self._get_or_create_boosted_speaker_file(speaker, audio_path)
+        if not boosted_path:
+            return None
             
         # Create player and audio output
         audio_output = QAudioOutput()
-        audio_output.setVolume(self._volume)
         
         player = QMediaPlayer()
         player.setAudioOutput(audio_output)
         
-        # Set source (this triggers the FFmpeg log - but only once per speaker!)
-        player.setSource(QUrl.fromLocalFile(audio_path))
+        # Set source to boosted file (which is also forced to 48kHz, so seek correction is 1.0)
+        player.setSource(QUrl.fromLocalFile(boosted_path))
         
-        # Determine seek correction for non-standard sample rates (Qt/FFmpeg bug workaround)
-        seek_correction = self._get_seek_correction(audio_path)
+        seek_correction = 1.0
         
         # Cache and return
         self._player_cache[speaker] = (player, audio_output, seek_correction)
         return self._player_cache[speaker]
 
-    def _get_seek_correction(self, audio_path: str) -> float:
-        """Calculate seek correction for low sample-rate WAV files."""
-        seek_correction = 1.0
-        try:
-            import wave
-            import contextlib
-            with contextlib.closing(wave.open(audio_path, 'rb')) as wf:
-                framerate = wf.getframerate()
-                # If sample rate is significantly lower than standard (44.1/48k),
-                # the backend likely calculates seek offsets using 48k logic.
-                if framerate < 44100:
-                    seek_correction = framerate / 48000.0
-        except Exception:
-            pass
-        return seek_correction
-
-    def _prepare_boosted_audio(self, clip: ScheduledClip) -> Optional[str]:
-        """Prepare a temporary boosted audio file for a clip using FFmpeg.
-
-        Args:
-            clip: Clip to boost
-
-        Returns:
-            Path to temporary boosted wav file, or None on failure
-        """
-        if clip.volume <= 1.0:
-            return None
-
-        # Key includes offset and duration because we extract just the segment
-        key = (clip.source_path, clip.source_offset, clip.duration, clip.volume)
-
-        if key in self._boosted_files_cache:
-            path = self._boosted_files_cache[key]
-            if os.path.exists(path):
-                # Update ownership if needed, or just return
-                # If this clip already owns a file that is different, we handle that in caller
-                return path
-
-        try:
-            if not clip.source_path or not os.path.exists(clip.source_path):
-                return None
-
-            # Create temp file
-            fd, temp_path = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-
-            # Use FFmpeg to extract segment and apply volume.
-            # Keep -ss AFTER -i for accurate seek on compressed/VBR sources.
-            # (This intentionally favors slower decode-then-seek behavior over
-            # fast but potentially imprecise input seeking.)
-            # -i: input file
-            # -ss: start time
-            # -t: duration
-            # -filter:a "volume=X"
-            # -y: overwrite
-            cmd = [
-                'ffmpeg',
-                '-i', clip.source_path,
-                '-ss', str(clip.source_offset),
-                '-t', str(clip.duration),
-                '-filter:a', f'volume={clip.volume}',
-                '-y',
-                temp_path
-            ]
-
-            # Run ffmpeg (suppress output)
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            # Update caches
-            self._boosted_files_cache[key] = temp_path
-
-            # Cleanup old file for this clip if it exists and is different
-            if clip.clip_id in self._clip_boosted_file:
-                old_path = self._clip_boosted_file[clip.clip_id]
-                if old_path != temp_path:
-                    # Only delete if no other clip uses it (simple ref counting impossible with tuple keys)
-                    # For simplicity in this session: we trust the cache key logic.
-                    # We only delete if it's NOT in the cache anymore (replaced)?
-                    # Actually, if the key changed (volume changed), the old key is still in cache.
-                    # We should remove old key from cache to prevent unlimited growth?
-                    pass
-
-            self._clip_boosted_file[clip.clip_id] = temp_path
-
-            return temp_path
-
-        except Exception as e:
-            print(f"Failed to boost audio with ffmpeg: {e}")
-            return None
-
-    def _get_or_create_boosted_player(self, clip_id: str, boosted_path: str) -> tuple[QMediaPlayer, QAudioOutput]:
-        """Get or create a dedicated player for a boosted clip."""
-        if clip_id in self._boosted_players:
-            player, output = self._boosted_players[clip_id]
-            # Verify source is correct (might have changed volume/file)
-            current_source = player.source().toLocalFile()
-            if current_source != boosted_path:
-                player.setSource(QUrl.fromLocalFile(boosted_path))
-            return player, output
-
-        # Create new
-        audio_output = QAudioOutput()
-        audio_output.setVolume(self._volume) # Master volume only
-
-        player = QMediaPlayer()
-        player.setAudioOutput(audio_output)
-        player.setSource(QUrl.fromLocalFile(boosted_path))
-
-        self._boosted_players[clip_id] = (player, audio_output)
-        return player, audio_output
-    
     def _start_clip(self, clip: ScheduledClip, current_position: float):
         """Start playing a clip at the appropriate offset.
         
@@ -477,61 +379,15 @@ class AudioMixer(QObject):
             clip: The clip to start
             current_position: Current timeline position in seconds
         """
-        # Determine if we need boosting
-        if clip.volume > 1.0:
-            boosted_path = self._prepare_boosted_audio(clip)
-            if boosted_path:
-                player, audio_output = self._get_or_create_boosted_player(clip.clip_id, boosted_path)
-                # Boosted clips are rendered to temporary WAV segments and then
-                # played from offset 0. Applying low-sample-rate correction here
-                # can under-seek (e.g. 5s -> ~2.5s) on some backends.
-                # Keep boosted-path seek in direct timeline milliseconds.
-
-                # Master volume only (boost baked in)
-                audio_output.setVolume(self._volume)
-
-                # For boosted clips, source is the EXTRACTED segment (offset 0)
-                # Time into clip determines position in temp file
-                time_into_clip = current_position - clip.timeline_start
-                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
-
-                self._active_players[clip.clip_id] = (player, audio_output)
-
-                if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
-                    player.setPlaybackRate(self._playback_rate)
-                    player.setPosition(playback_position_ms)
-                    if self._playing:
-                        player.play()
-                else:
-                    def on_media_status_changed(status):
-                        if status == QMediaPlayer.MediaStatus.LoadedMedia:
-                            player.setPlaybackRate(self._playback_rate)
-                            if self._playing:
-                                # Use the originally scheduled position instead of recalculating
-                                # from self._position. Boosted path can spend noticeable time in
-                                # ffmpeg extraction, and using current timeline position here can
-                                # skip into the clip unexpectedly when entering it.
-                                playback_position_ms = int(max(0.0, time_into_clip) * 1000)
-                                player.setPosition(playback_position_ms)
-                                player.play()
-                            else:
-                                player.setPosition(playback_position_ms)
-                            try:
-                                player.mediaStatusChanged.disconnect(on_media_status_changed)
-                            except Exception:
-                                pass
-                    player.mediaStatusChanged.connect(on_media_status_changed)
-                return
-
-        # Fallback to standard logic for <= 1.0 volume (shared players)
+        # Fallback to standard logic for all volumes (shared players using 2.0x boosted source)
         cached = self._get_or_create_cached_player(clip.speaker)
         if cached is None:
             return
             
         player, audio_output, seek_correction = cached
         
-        # Apply volume
-        effective_vol = self._volume * clip.volume
+        # Apply volume (source is 2.0x, so divide by 2)
+        effective_vol = self._volume * (clip.volume / 2.0)
         audio_output.setVolume(effective_vol)
 
         # Calculate where in the source audio to start
@@ -599,22 +455,14 @@ class AudioMixer(QObject):
             audio_output.deleteLater()
         self._player_cache.clear()
 
-        # Clear boosted players
-        for clip_id, (player, audio_output) in self._boosted_players.items():
-            player.stop()
-            player.deleteLater()
-            audio_output.deleteLater()
-        self._boosted_players.clear()
-
         # Remove temp files
-        for path in self._boosted_files_cache.values():
+        for path in self._speaker_boosted_files.values():
             if os.path.exists(path):
                 try:
                     os.remove(path)
                 except Exception:
                     pass
-        self._boosted_files_cache.clear()
-        self._clip_boosted_file.clear()
+        self._speaker_boosted_files.clear()
         
     def cleanup(self):
         """Cleanup all resources"""
@@ -639,51 +487,11 @@ class AudioMixer(QObject):
             
         # If this clip is active (playing or paused), update it
         if clip.clip_id in self._active_players:
-            # 1. Update volume immediately
+            # Update volume immediately
             player, audio_output = self._active_players[clip.clip_id]
+            effective_vol = self._volume * (clip.volume / 2.0)
+            audio_output.setVolume(effective_vol)
 
-            # Check if we switched from normal to boosted or vice-versa
-            is_currently_boosted = (clip.clip_id in self._boosted_players)
-            needs_boost = (clip.volume > 1.0)
-
-            if is_currently_boosted != needs_boost:
-                # Mode switched, restart clip to switch player architecture
-                if self._playing:
-                    self._stop_clip(clip.clip_id)
-                    if clip.timeline_start <= self._position < clip.timeline_end:
-                        self._start_clip(clip, self._position)
-                else:
-                    self._stop_clip(clip.clip_id)
-
-            elif needs_boost:
-                # Boosted -> Boosted.
-                # Check if we need to regenerate due to volume change
-                # We do this by checking if the _prepare_boosted_audio returns a different path
-                # (since key includes volume) or simply if we assume it changed.
-
-                # Ideally we only restart if the path changed.
-                # But calculating path requires calling _prepare_boosted_audio (which might run ffmpeg).
-                # Since we already optimized UI to NOT call this during drag, we can assume
-                # any call here is a committed change (or legitimate update).
-
-                # So we restart to be safe and apply new file.
-                if self._playing:
-                    self._stop_clip(clip.clip_id)
-                    if clip.timeline_start <= self._position < clip.timeline_end:
-                        self._start_clip(clip, self._position)
-                else:
-                    self._stop_clip(clip.clip_id)
-
-            else:
-                # Normal -> Normal. Just update volume multiplier.
-                effective_vol = self._volume * clip.volume
-                audio_output.setVolume(effective_vol)
-
-            # 2. If playing and timing changed significantly, restart might be needed
-            # (Handled by restart logic above for boost cases)
-            # For standard clips, we stick to existing restart logic if timing changes
-            # We assume volume-only updates don't need restart for standard clips.
-                
         self._update_duration()
         
     def remove_clip(self, clip_id: str):
@@ -695,22 +503,7 @@ class AudioMixer(QObject):
         # Stop if playing
         if clip_id in self._active_players:
             self._stop_clip(clip_id)
-            
-        # Clean up boosted resources if any
-        if clip_id in self._boosted_players:
-             player, audio_output = self._boosted_players.pop(clip_id)
-             player.stop()
-             player.deleteLater()
-             audio_output.deleteLater()
 
         # Remove from list
         self.clips = [c for c in self.clips if c.clip_id != clip_id]
         self._update_duration()
-
-        # Cleanup file ownership for this clip
-        if clip_id in self._clip_boosted_file:
-            path = self._clip_boosted_file.pop(clip_id)
-            # Check if used by others in cache (unlikely with our usage pattern but possible)
-            # We won't delete the file immediately from disk to be safe with shared cache keys,
-            # but we remove our reference.
-            # Real cleanup happens in _clear_player_cache or app exit.
