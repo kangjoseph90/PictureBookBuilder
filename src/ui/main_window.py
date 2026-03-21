@@ -245,6 +245,11 @@ class MainWindow(QMainWindow):
         self.action_auteur_import.triggered.connect(self._import_from_auteur)
         self.action_auteur_import.setEnabled(False)
         tools_menu.addAction(self.action_auteur_import)
+
+        self.action_normalize_volume = QAction("볼륨 정규화 (Loudness+Peak)", self)
+        self.action_normalize_volume.triggered.connect(self._normalize_audio_clip_volumes)
+        self.action_normalize_volume.setEnabled(False)
+        tools_menu.addAction(self.action_normalize_volume)
         
         # --- Export Menu ---
         export_menu = menu_bar.addMenu("내보내기")
@@ -1113,6 +1118,7 @@ class MainWindow(QMainWindow):
             self.action_export_srt.setEnabled(True)
             self.action_export_xml.setEnabled(True)
             self.action_render.setEnabled(True)
+            self.action_normalize_volume.setEnabled(True)
             
             # Update timeline with aligned clips
             if result and 'aligned' in result:
@@ -3123,7 +3129,8 @@ class MainWindow(QMainWindow):
                     timeline_end=clip.start + clip.duration,
                     source_offset=clip.offset,
                     source_path=speaker_audio_map.get(clip.speaker, ""),
-                    duration=clip.duration
+                    duration=clip.duration,
+                    volume=clip.volume
                 ))
             
             # Calculate total timeline duration from ALL clips (audio, subtitle, image)
@@ -3151,6 +3158,90 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             self.statusBar().showMessage(f"오디오 재생성 실패: {str(e)}")
+
+    def _normalize_audio_clip_volumes(self):
+        """Normalize timeline audio clips by per-clip loudness and peak."""
+        from pydub import AudioSegment
+
+        audio_clips = [c for c in self.timeline_widget.canvas.clips if c.clip_type == "audio"]
+        if not audio_clips:
+            QMessageBox.warning(self, "오류", "정규화할 오디오 클립이 없습니다.")
+            return
+
+        speaker_audio_map = (self.result_data.get('speaker_audio_map', {}) if self.result_data else None) or self.speaker_audio_map
+        if not speaker_audio_map:
+            QMessageBox.warning(self, "오류", "화자 오디오 파일 매핑 정보가 없습니다.")
+            return
+
+        target_loudness_dbfs = -20.0
+        target_peak_dbfs = -1.0
+        min_volume = 0.0
+        max_volume = 2.0
+
+        audio_cache: dict[str, AudioSegment] = {}
+        modifications = []
+        normalized_count = 0
+        skipped_count = 0
+
+        for clip in audio_clips:
+            source_path = speaker_audio_map.get(clip.speaker, "")
+            if not source_path or clip.duration <= 0:
+                skipped_count += 1
+                continue
+
+            try:
+                if clip.speaker not in audio_cache:
+                    audio_cache[clip.speaker] = AudioSegment.from_file(source_path)
+                full_audio = audio_cache[clip.speaker]
+
+                start_ms = max(0, int(clip.offset * 1000))
+                end_ms = min(len(full_audio), int((clip.offset + clip.duration) * 1000))
+                if end_ms <= start_ms:
+                    skipped_count += 1
+                    continue
+
+                clip_audio = full_audio[start_ms:end_ms]
+                if len(clip_audio) == 0 or clip_audio.rms == 0:
+                    skipped_count += 1
+                    continue
+
+                loudness_dbfs = float(clip_audio.dBFS)
+                peak_dbfs = float(clip_audio.max_dBFS)
+
+                gain_for_loudness = target_loudness_dbfs - loudness_dbfs
+                gain_for_peak_limit = target_peak_dbfs - peak_dbfs
+                applied_gain_db = min(gain_for_loudness, gain_for_peak_limit)
+
+                volume_multiplier = 10 ** (applied_gain_db / 20.0)
+                volume_multiplier = max(min_volume, min(max_volume, volume_multiplier))
+
+                old_state = copy.deepcopy(clip)
+                new_state = copy.deepcopy(clip)
+                new_state.volume = volume_multiplier
+
+                if abs(old_state.volume - new_state.volume) > 0.001:
+                    modifications.append((clip.id, old_state, new_state))
+                    normalized_count += 1
+            except Exception as e:
+                print(f"Failed to normalize clip {clip.id}: {e}")
+                skipped_count += 1
+
+        if not modifications:
+            self.statusBar().showMessage(f"볼륨 정규화 적용 대상이 없습니다. (건너뜀: {skipped_count}개)")
+            return
+
+        cmd = ModifyClipsCommand(
+            self.timeline_widget.canvas,
+            modifications,
+            description="Normalize audio clip volumes",
+            callback=self._on_undo_redo_callback
+        )
+        self.undo_stack.push(cmd)
+        cmd.redo()
+        self._update_undo_redo_actions()
+        self.statusBar().showMessage(
+            f"오디오 클립 볼륨 정규화 완료: {normalized_count}개 적용, {skipped_count}개 건너뜀"
+        )
     
     def _export_srt(self):
         """Export SRT file"""
@@ -3477,6 +3568,7 @@ class MainWindow(QMainWindow):
         self.action_render.setEnabled(False)
         self.action_apply_images.setEnabled(False)
         self.action_export_audio.setEnabled(False)
+        self.action_normalize_volume.setEnabled(False)
         self.reload_images_action.setEnabled(False)
         
         # Reset preview
@@ -3843,6 +3935,7 @@ class MainWindow(QMainWindow):
             self.action_export_xml.setEnabled(True)
             self.action_render.setEnabled(True)
             self.action_export_audio.setEnabled(True)
+            self.action_normalize_volume.setEnabled(True)
             
             # Enable image apply button if we have images
             if self.image_list.count() > 0:
