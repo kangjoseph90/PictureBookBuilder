@@ -353,6 +353,14 @@ class AudioMixer(QObject):
         player.setSource(QUrl.fromLocalFile(audio_path))
         
         # Determine seek correction for non-standard sample rates (Qt/FFmpeg bug workaround)
+        seek_correction = self._get_seek_correction(audio_path)
+        
+        # Cache and return
+        self._player_cache[speaker] = (player, audio_output, seek_correction)
+        return self._player_cache[speaker]
+
+    def _get_seek_correction(self, audio_path: str) -> float:
+        """Calculate seek correction for low sample-rate WAV files."""
         seek_correction = 1.0
         try:
             import wave
@@ -365,10 +373,7 @@ class AudioMixer(QObject):
                     seek_correction = framerate / 48000.0
         except Exception:
             pass
-        
-        # Cache and return
-        self._player_cache[speaker] = (player, audio_output, seek_correction)
-        return self._player_cache[speaker]
+        return seek_correction
 
     def _prepare_boosted_audio(self, clip: ScheduledClip) -> Optional[str]:
         """Prepare a temporary boosted audio file for a clip using FFmpeg.
@@ -474,6 +479,7 @@ class AudioMixer(QObject):
             boosted_path = self._prepare_boosted_audio(clip)
             if boosted_path:
                 player, audio_output = self._get_or_create_boosted_player(clip.clip_id, boosted_path)
+                seek_correction = self._get_seek_correction(boosted_path)
 
                 # Master volume only (boost baked in)
                 audio_output.setVolume(self._volume)
@@ -481,13 +487,14 @@ class AudioMixer(QObject):
                 # For boosted clips, source is the EXTRACTED segment (offset 0)
                 # Time into clip determines position in temp file
                 time_into_clip = current_position - clip.timeline_start
-                source_position_ms = int(time_into_clip * 1000)
+                source_position_ms = max(0, int(time_into_clip * 1000))
+                corrected_pos = int(source_position_ms * seek_correction)
 
                 self._active_players[clip.clip_id] = (player, audio_output)
 
                 if player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
                     player.setPlaybackRate(self._playback_rate)
-                    player.setPosition(source_position_ms)
+                    player.setPosition(corrected_pos)
                     if self._playing:
                         player.play()
                 else:
@@ -496,10 +503,10 @@ class AudioMixer(QObject):
                             player.setPlaybackRate(self._playback_rate)
                             if self._playing:
                                 current_tic = self._position - clip.timeline_start
-                                player.setPosition(int(current_tic * 1000))
+                                player.setPosition(int(max(0.0, current_tic * 1000) * seek_correction))
                                 player.play()
                             else:
-                                player.setPosition(source_position_ms)
+                                player.setPosition(corrected_pos)
                             try:
                                 player.mediaStatusChanged.disconnect(on_media_status_changed)
                             except Exception:
