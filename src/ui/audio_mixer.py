@@ -129,13 +129,18 @@ class AudioMixer(QObject):
         
     def set_speaker_audio_paths(self, paths: dict[str, str]):
         """Set the audio file paths for each speaker.
-        
+
         Args:
             paths: Dict mapping speaker name to audio file path
         """
-        # Clear cache if paths changed (invalidate old players)
+        # When speaker files change, the shared per-speaker players are stale
+        # and must be recreated.  However, the boosted-file cache is keyed by
+        # (source_path, offset, duration), so entries for old source paths can
+        # never be matched by new clips — they simply accumulate as harmless
+        # orphans until cleanup().  Preserving the file cache avoids unnecessary
+        # re-encoding when the same source file is still in use.
         if paths != self.speaker_audio_paths:
-            self._clear_player_cache()
+            self._clear_speaker_player_cache()
         self.speaker_audio_paths = paths
         
     def _update_duration(self):
@@ -435,7 +440,7 @@ class AudioMixer(QObject):
             # -filter:a "volume=X,alimiter": first boost amplitude to
             #   MAX_PREVIEW_VOLUME, then hard-limit peaks at 0.99 FS to
             #   prevent clipping.  level=disabled means the limiter does not
-            #   apply further gain normalisation — it only clips peaks above
+            #   apply further gain normalization — it only clips peaks above
             #   the threshold.
             # -y: overwrite
             cmd = [
@@ -603,15 +608,30 @@ class AudioMixer(QObject):
         for clip_id in list(self._active_players.keys()):
             self._stop_clip(clip_id)
             
-    def _clear_player_cache(self):
-        """Clear and cleanup all cached players"""
-        # Clear shared speaker players
+    def _clear_speaker_player_cache(self):
+        """Clear only the shared per-speaker Qt player objects.
+
+        The boosted-file cache (``_boosted_files_cache``) is intentionally
+        preserved: its entries are keyed by source path, so stale entries from
+        old audio files are never matched by new clips.  Clearing it here would
+        force every volume > 1.0 clip to re-encode on the next play, which is
+        exactly the redundant work we want to avoid.
+        """
         for speaker, (player, audio_output, _) in self._player_cache.items():
             player.stop()
             player.setSource(QUrl())
             player.deleteLater()
             audio_output.deleteLater()
         self._player_cache.clear()
+
+    def _clear_player_cache(self):
+        """Clear ALL cached resources including boosted temp files.
+
+        Call this only when a full teardown is needed (e.g. ``cleanup()``).
+        For routine speaker-path updates use ``_clear_speaker_player_cache``
+        instead so that the boosted-file cache survives across sessions.
+        """
+        self._clear_speaker_player_cache()
 
         # Clear boosted players
         for clip_id, (player, audio_output) in self._boosted_players.items():

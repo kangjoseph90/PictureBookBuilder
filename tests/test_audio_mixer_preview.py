@@ -444,5 +444,125 @@ class TestUpdateClipBoostedBoosted(unittest.TestCase):
         mock_stop.assert_called_once_with(new_clip.clip_id)
 
 
+class TestSetSpeakerAudioPathsCachePreservation(unittest.TestCase):
+    """
+    set_speaker_audio_paths must preserve the boosted-file cache across calls.
+
+    When speaker audio paths change (e.g. the same mixer instance is reused
+    across multiple set_audio_clips calls), the boosted-file cache must NOT
+    be wiped.  The cache is keyed by (source_path, offset, duration), so
+    stale entries from old source paths are harmless: they are simply never
+    matched by new clips that carry a different source_path.
+
+    Wiping the cache on every set_speaker_audio_paths call forces every
+    volume > 1.0 clip to re-encode on the next play — exactly the regression
+    the user reported ("still regenerating every time clips are entered").
+    """
+
+    def setUp(self):
+        self.mixer = AudioMixer()
+
+    def test_boosted_cache_survives_speaker_path_change(self):
+        """
+        Calling set_speaker_audio_paths with DIFFERENT paths must NOT clear
+        _boosted_files_cache.
+        """
+        fake_path = "/tmp/boosted_segment.wav"
+        clip = _make_clip(volume=1.5)
+        key = (clip.source_path, clip.source_offset, clip.duration)
+        # Manually populate cache
+        self.mixer._boosted_files_cache[key] = fake_path
+        self.mixer._clip_boosted_file[clip.clip_id] = fake_path
+
+        # Simulate speaker path change
+        with patch("ui.audio_mixer.os.path.exists", return_value=True):
+            self.mixer.set_speaker_audio_paths({"alice": "/new/path/alice.wav"})
+
+        # File cache must still contain our entry
+        self.assertIn(key, self.mixer._boosted_files_cache)
+        self.assertEqual(self.mixer._boosted_files_cache[key], fake_path)
+
+    def test_boosted_cache_survives_repeated_set_speaker_audio_paths(self):
+        """
+        Calling set_speaker_audio_paths with the SAME paths multiple times
+        must not clear _boosted_files_cache (stable-path scenario).
+        """
+        paths = {"alice": "/fake/audio.wav"}
+        fake_path = "/tmp/boost.wav"
+        clip = _make_clip(volume=1.5)
+        key = (clip.source_path, clip.source_offset, clip.duration)
+        self.mixer._boosted_files_cache[key] = fake_path
+
+        # First call (initializes self.speaker_audio_paths)
+        self.mixer.set_speaker_audio_paths(paths)
+        # Second call (same paths — should be a no-op for caches)
+        self.mixer.set_speaker_audio_paths(paths)
+
+        self.assertIn(key, self.mixer._boosted_files_cache)
+
+    def test_speaker_player_cache_is_cleared_on_path_change(self):
+        """
+        Shared speaker-player objects must be cleaned up when speaker paths
+        change, even though the boosted-file cache is preserved.
+        """
+        # Inject a fake player into _player_cache
+        mock_player = MagicMock()
+        mock_output = MagicMock()
+        self.mixer._player_cache["alice"] = (mock_player, mock_output, 1.0)
+
+        with patch("ui.audio_mixer.os.path.exists", return_value=True):
+            self.mixer.set_speaker_audio_paths({"alice": "/new/alice.wav"})
+
+        # Shared player must be removed from cache
+        self.assertNotIn("alice", self.mixer._player_cache)
+        mock_player.deleteLater.assert_called()
+
+    def test_full_cleanup_removes_boosted_cache(self):
+        """
+        cleanup() (which calls _clear_player_cache) must still remove the
+        boosted-file cache and delete temp files.
+        """
+        fake_path = "/tmp/boost_to_delete.wav"
+        clip = _make_clip(volume=1.5)
+        key = (clip.source_path, clip.source_offset, clip.duration)
+        self.mixer._boosted_files_cache[key] = fake_path
+
+        deleted = []
+
+        def fake_remove(p):
+            deleted.append(p)
+
+        with patch("ui.audio_mixer.os.path.exists", return_value=True), \
+             patch("ui.audio_mixer.os.remove", side_effect=fake_remove):
+            self.mixer._clear_player_cache()
+
+        self.assertNotIn(key, self.mixer._boosted_files_cache)
+        self.assertIn(fake_path, deleted)
+
+    def test_prepare_boosted_still_uses_cache_after_set_speaker_audio_paths(self):
+        """
+        After set_speaker_audio_paths is called (even with different paths),
+        _prepare_boosted_audio must return the cached file — not re-run FFmpeg.
+        """
+        clip = _make_clip(volume=1.5)
+        fake_path = "/tmp/boost_cached.wav"
+
+        # Seed the file cache directly
+        key = (clip.source_path, clip.source_offset, clip.duration)
+        self.mixer._boosted_files_cache[key] = fake_path
+
+        # Simulate a speaker-path change (different paths dict)
+        with patch("ui.audio_mixer.os.path.exists", return_value=True):
+            self.mixer.set_speaker_audio_paths({"alice": "/different/path.wav"})
+
+        # Now ask for the boosted audio — must return from cache, no FFmpeg
+        with patch("ui.audio_mixer.os.path.exists", return_value=True), \
+             patch("ui.audio_mixer.subprocess.run") as mock_run:
+            result = self.mixer._prepare_boosted_audio(clip)
+
+        mock_run.assert_not_called()
+        self.assertEqual(result, fake_path)
+
+
 if __name__ == "__main__":
     unittest.main()
