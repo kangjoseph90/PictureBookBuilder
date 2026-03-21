@@ -501,8 +501,11 @@ class AudioMixer(QObject):
                         if status == QMediaPlayer.MediaStatus.LoadedMedia:
                             player.setPlaybackRate(self._playback_rate)
                             if self._playing:
-                                current_tic = self._position - clip.timeline_start
-                                corrected_pos = int(max(0.0, current_tic * seek_correction) * 1000)
+                                # Use the originally scheduled position instead of recalculating
+                                # from self._position. Boosted path can spend noticeable time in
+                                # ffmpeg extraction, and using current timeline position here can
+                                # skip into the clip unexpectedly when entering it.
+                                corrected_pos = int(max(0.0, time_into_clip * seek_correction) * 1000)
                                 player.setPosition(corrected_pos)
                                 player.play()
                             else:
