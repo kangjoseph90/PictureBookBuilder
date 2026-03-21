@@ -481,7 +481,11 @@ class AudioMixer(QObject):
             boosted_path = self._prepare_boosted_audio(clip)
             if boosted_path:
                 player, audio_output = self._get_or_create_boosted_player(clip.clip_id, boosted_path)
-                seek_correction = self._get_seek_correction(boosted_path)
+                # Boosted clips are rendered to temporary WAV segments and then
+                # played from offset 0. Applying low-sample-rate correction here
+                # can under-seek (e.g. 5s -> ~2.5s) on some backends.
+                # Keep boosted-path seek in direct timeline milliseconds.
+                seek_correction = 1.0
 
                 # Master volume only (boost baked in)
                 audio_output.setVolume(self._volume)
