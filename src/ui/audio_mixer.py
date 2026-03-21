@@ -405,17 +405,19 @@ class AudioMixer(QObject):
             fd, temp_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
 
-            # Use FFmpeg to extract segment and apply volume
+            # Use FFmpeg to extract segment and apply volume.
+            # Keep -ss AFTER -i for accurate seek on compressed/VBR sources.
+            # (Input seeking can be fast but imprecise and may shift clip start.)
+            # -i: input file
             # -ss: start time
             # -t: duration
-            # -i: input file
             # -filter:a "volume=X"
             # -y: overwrite
             cmd = [
                 'ffmpeg',
+                '-i', clip.source_path,
                 '-ss', str(clip.source_offset),
                 '-t', str(clip.duration),
-                '-i', clip.source_path,
                 '-filter:a', f'volume={clip.volume}',
                 '-y',
                 temp_path
